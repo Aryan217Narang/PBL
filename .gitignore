@@ -1,0 +1,25 @@
+# Large dataset files & CSVs (>100MB GitHub limit)
+*.csv
+*.pcap
+*.pcap_ISCX
+data/
+code/data/
+**/data/raw/
+**/data/processed/*.npz
+**/data/processed/*.joblib
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.ipynb_checkpoints/
+.pytest_cache/
+
+# Environments & IDE configs
+.env
+.venv
+env/
+venv/
+.idea/
+.vscode/
+*.tmp
