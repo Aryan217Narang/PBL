@@ -1,11 +1,13 @@
 """
 preprocessing.py
 Steps (from paper Fig. 1):
-  Data Loading → Data Cleaning → Feature Normalization →
-  Label Encoding → Feature Selection (RFE) → Feature Extraction (ICA) →
-  Train/Test Split
+  Data Loading -> Data Cleaning -> Feature Normalization (MinMaxScaler) ->
+  Label Encoding -> Feature Selection (RFE) -> Feature Extraction (ICA) ->
+  Train/Test Split (80/20)
 """
 
+import os
+import glob
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import MinMaxScaler, LabelEncoder
@@ -14,27 +16,24 @@ from sklearn.feature_selection import RFE
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split
 
-
-# ── Known label columns ──────────────────────────────────────────────────────
 LABEL_COLUMNS = [
     "Label", "label", " Label",
     "attack_cat", "class",
 ]
 
 DROP_COLUMNS = [
-    "Flow ID", " Flow ID", "Source IP", " Source IP", "Destination IP",
-    " Destination IP", "Timestamp", " Timestamp", "SimillarHTTP",
+    "Flow ID", "Source IP", "Destination IP",
+    "Timestamp", "SimillarHTTP", "Unnamed: 0",
+    "Inbound", "Source Port", "Destination Port"
 ]
 
-# How many rows to read from each CSV — fast, no pre-scanning
-ROWS_PER_FILE = 20_000
+ROWS_PER_FILE = 15000
+CACHE_FILE = "data/processed_cicddos2019.npz"
 
 
-def _detect_label_column(df: pd.DataFrame) -> str:
-    for candidate in LABEL_COLUMNS:
-        if candidate in df.columns:
-            return candidate
-    return df.columns[-1]
+def _clean_column_names(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = [c.strip() for c in df.columns]
+    return df
 
 
 def _clean(df: pd.DataFrame) -> pd.DataFrame:
@@ -59,22 +58,39 @@ def load_and_preprocess(
     n_rfe_features: int = 15,
     random_state: int = 42,
     rows_per_file: int = ROWS_PER_FILE,
+    force_recompute: bool = False,
 ):
-    # ── Load each file with nrows — fast, no pre-scanning ────────
+    # Check if cached preprocessed dataset already exists
+    if not force_recompute and os.path.exists(CACHE_FILE):
+        print(f"    Loading cached preprocessed data from {CACHE_FILE}...")
+        try:
+            cached = np.load(CACHE_FILE, allow_pickle=True)
+            X_train = cached["X_train"]
+            X_test  = cached["X_test"]
+            y_train = cached["y_train"]
+            y_test  = cached["y_test"]
+            n_classes = int(cached["n_classes"])
+            print(f"    Loaded from cache: Train={X_train.shape}, Test={X_test.shape}, Classes={n_classes}")
+            return X_train, X_test, y_train, y_test, n_classes
+        except Exception as e:
+            print(f"    Cache read failed ({e}), recomputing from CSVs...")
+
+    # ── Load each file with nrows — fast & memory-safe ────────
     dfs = []
     for f in file_paths:
         print(f"    Loading: {f}")
         try:
             df = pd.read_csv(
                 f,
-                nrows=rows_per_file,        # just read the first N rows, instantly
+                nrows=rows_per_file,
                 low_memory=False,
                 on_bad_lines='skip'
             )
+            df = _clean_column_names(df)
             print(f"      Loaded {len(df):,} rows, {df.shape[1]} columns")
             dfs.append(df)
         except Exception as e:
-            print(f"      ERROR: {e} — skipping")
+            print(f"      ERROR: {e} - skipping")
             continue
 
     if not dfs:
@@ -83,14 +99,14 @@ def load_and_preprocess(
     df = pd.concat(dfs, ignore_index=True)
     print(f"    Total combined shape: {df.shape}")
 
-    # ── Drop metadata columns ────────────────────────────────────
+    # ── Drop non-generalizable metadata columns ─────────────────
     df = df.drop(columns=[c for c in DROP_COLUMNS if c in df.columns], errors="ignore")
 
     # ── Detect label column ──────────────────────────────────────
-    label_col = _detect_label_column(df)
+    label_col = "Label" if "Label" in df.columns else df.columns[-1]
     print(f"    Label column: '{label_col}'")
 
-    # ── Clean ────────────────────────────────────────────────────
+    # ── Clean & Filter Numerics ──────────────────────────────────
     df = _clean(df)
     df = _drop_non_numeric(df, label_col)
 
@@ -121,13 +137,25 @@ def load_and_preprocess(
     X_rfe = rfe.fit_transform(X_ica, y)
     print(f"    RFE selected features: {X_rfe.shape[1]}")
 
-    # ── Train / Test Split ───────────────────────────────────────
+    # ── Train / Test Split (80/20) ───────────────────────────────
     X_train, X_test, y_train, y_test = train_test_split(
-        X_rfe, y, test_size=test_size, random_state=random_state, 
+        X_rfe, y, test_size=test_size, random_state=random_state, stratify=y
     )
 
-    # ── Reshape for CNN (samples, features, 1) ───────────────────
+    # ── Reshape for 1D-CNN (samples, features, 1) ────────────────
     X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
     X_test  = X_test.reshape(X_test.shape[0],  X_test.shape[1],  1)
+
+    # ── Cache to disk for instant future runs ────────────────────
+    os.makedirs("data", exist_ok=True)
+    np.savez(
+        CACHE_FILE,
+        X_train=X_train,
+        X_test=X_test,
+        y_train=y_train,
+        y_test=y_test,
+        n_classes=n_classes
+    )
+    print(f"    Cached preprocessed dataset to: {CACHE_FILE}")
 
     return X_train, X_test, y_train, y_test, n_classes

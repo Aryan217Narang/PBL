@@ -132,17 +132,17 @@ def evaluate_model(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def print_results(res: dict):
-    print(f"\n  ┌─ {res['label']} {'─'*(45 - len(res['label']))}")
-    print(f"  │  Accuracy   : {res['accuracy']:>7.2f}%")
-    print(f"  │  Precision  : {res['precision']:>7.2f}%")
-    print(f"  │  Recall     : {res['recall']:>7.2f}%")
-    print(f"  │  F1-Score   : {res['f1_score']:>7.2f}%")
-    print(f"  │  AUC        : {str(res['auc']):>8}")
-    print(f"  │  Specificity: {res['specificity']:>7.2f}%")
+    print(f"\n  +-- {res['label']} {'-'*(45 - len(res['label']))}")
+    print(f"  |  Accuracy   : {res['accuracy']:>7.2f}%")
+    print(f"  |  Precision  : {res['precision']:>7.2f}%")
+    print(f"  |  Recall     : {res['recall']:>7.2f}%")
+    print(f"  |  F1-Score   : {res['f1_score']:>7.2f}%")
+    print(f"  |  AUC        : {str(res['auc']):>8}")
+    print(f"  |  Specificity: {res['specificity']:>7.2f}%")
     if res["asr"] != "N/A":
-        print(f"  │  ASR        : {res['asr']:>7.2f}%")
-    print(f"  │  TP={res['tp']}  TN={res['tn']}  FP={res['fp']}  FN={res['fn']}")
-    print(f"  └{'─'*50}")
+        print(f"  |  ASR        : {res['asr']:>7.2f}%")
+    print(f"  |  TP={res['tp']}  TN={res['tn']}  FP={res['fp']}  FN={res['fn']}")
+    print(f"  +{'-'*50}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

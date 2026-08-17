@@ -1,12 +1,21 @@
 """
 Hybrid Defense Model for DL-based NIDS Against Adversarial Attacks
 Based on: Barik & Misra (2025), Multimedia Tools and Applications
-Pipeline: Preprocessing → Attacks (JSMA/FGSM/C&W) → Defense (PGD+PIOA+SS) → Evaluation
+Pipeline: Preprocessing -> Attacks (JSMA/FGSM/C&W) -> Defense (PGD+PIOA+SS) -> Evaluation
+Dataset: CIC-DDoS2019 (100% 2019 dataset)
 """
 
 import os
+import sys
 import warnings
 warnings.filterwarnings('ignore')
+
+# Enable UTF-8 encoding for Windows terminals
+if sys.platform == "win32":
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
 
 import numpy as np
 import pandas as pd
@@ -19,31 +28,32 @@ from attacks import generate_jsma, generate_fgsm, generate_cw
 from defense import pgd_adversarial_training, spatial_smoothing, pioa_optimize
 from evaluation import evaluate_model, print_results, plot_results
 
+
 # ─────────────────────────────────────────────
-# CONFIG
+# CONFIG (Purely CIC-DDoS2019 Dataset)
 # ─────────────────────────────────────────────
 CONFIG = {
-    # Each dataset is now a LIST of individual CSV file paths
-   # Change the "datasets" part in main.py to this:
-"datasets": {
-    "CIC-IDS2017": [
-        "data/CIC-IDS2017/Monday-WorkingHours.pcap_ISCX.csv",
-        "data/CIC-IDS2017/Tuesday-WorkingHours.pcap_ISCX.csv",
-        "data/CIC-IDS2017/Wednesday-workingHours.pcap_ISCX.csv",
-        "data/CIC-IDS2017/Thursday-WorkingHours-Morning-WebAttacks.pcap_ISCX.csv",
-        "data/CIC-IDS2017/Thursday-WorkingHours-Afternoon-Infilteration.pcap_ISCX.csv",
-        "data/CIC-IDS2017/Friday-WorkingHours-Morning.pcap_ISCX.csv",
-        "data/CIC-IDS2017/Friday-WorkingHours-Afternoon-PortScan.pcap_ISCX.csv",
-        "data/CIC-IDS2017/Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv",
-    ],
-},
-    # Train/test split
+    "datasets": {
+        "CIC-DDoS2019": [
+            "data/cic-ids-2019/DrDoS_DNS_data_1_per.csv",
+            "data/cic-ids-2019/DrDoS_LDAP_data_2_0_per.csv",
+            "data/cic-ids-2019/DrDoS_MSSQL_data_1_3_per.csv",
+            "data/cic-ids-2019/DrDoS_NTP_data_data_5_per.csv",
+            "data/cic-ids-2019/DrDoS_NetBIOS_data_1_3_per.csv",
+            "data/cic-ids-2019/DrDoS_SNMP_data_1_3_per.csv",
+            "data/cic-ids-2019/DrDoS_SSDP_data_2_per.csv",
+            "data/cic-ids-2019/DrDoS_UDP_data_2_per.csv",
+            "data/cic-ids-2019/UDPLag_data_2_0_per.csv",
+            "data/cic-ids-2019/syn_data.csv",
+        ],
+    },
+    # Train/test split (80/20 standard)
     "test_size": 0.20,
     "val_split": 0.10,
 
     # CNN hyperparameters (from paper Table 3)
     "epochs":     10,
-    "batch_size": 32,
+    "batch_size": 64,
     "optimizer":  "adam",
     "loss":       "sparse_categorical_crossentropy",
 
@@ -57,9 +67,9 @@ CONFIG = {
 
     # PIOA hyperparameters (from paper Table 5)
     "pioa": {
-        "n_pigeons":      50,
+        "n_pigeons":      10,
         "dimensions":     10,
-        "max_iterations": 1000,
+        "max_iterations": 20,
         "r":              0.5,
     },
 
@@ -67,7 +77,7 @@ CONFIG = {
     "pgd": {
         "epsilon": 0.02,
         "alpha":   0.003,
-        "n_iter":  20,
+        "n_iter":  10,
     },
 
     # Output directory
@@ -75,27 +85,42 @@ CONFIG = {
 }
 
 
-def run_pipeline(dataset_name: str, file_paths: list):
-    print(f"\n{'='*60}")
-    print(f"  DATASET: {dataset_name}")
-    print(f"{'='*60}")
+def resolve_path(p: str) -> str:
+    """Helper to locate CSV files regardless of execution working directory."""
+    if os.path.exists(p):
+        return p
+    alt = os.path.join("code", p)
+    if os.path.exists(alt):
+        return alt
+    parent_alt = os.path.join("..", p)
+    if os.path.exists(parent_alt):
+        return parent_alt
+    return p
+
+
+def run_pipeline(dataset_name: str, raw_file_paths: list):
+    print(f"\n{'='*65}")
+    print(f"  DATASET: {dataset_name} (100% 2019 NIDS Dataset)")
+    print(f"{'='*65}")
+
+    file_paths = [resolve_path(f) for f in raw_file_paths]
 
     out_dir = Path(CONFIG["output_dir"]) / dataset_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. PREPROCESSING ────────────────────────────────────────
-    print("\n[1/5] Preprocessing...")
+    print("\n[1/5] Preprocessing (MinMaxScaler -> FastICA -> RFE -> 80/20 Split)...")
     X_train, X_test, y_train, y_test, n_classes = load_and_preprocess(
         file_paths=file_paths,
         test_size=CONFIG["test_size"]
     )
-    # 🔥 LIMIT DATA FOR SPEED (APPLY EVERYWHERE)
-    X_test = X_test[:1000]
-    y_test = y_test[:1000]
-    print(f"      Train: {X_train.shape} | Test: {X_test.shape} | Classes: {n_classes}")
+    # Test subset for rapid adversarial generation
+    X_test_sub = X_test[:1000]
+    y_test_sub = y_test[:1000]
+    print(f"      Train: {X_train.shape} | Test: {X_test_sub.shape} | Classes: {n_classes}")
 
     # ── 2. BUILD & TRAIN BASE MODEL ─────────────────────────────
-    print("\n[2/5] Training base CNN model...")
+    print("\n[2/5] Training base 1D-CNN classifier...")
     model = build_cnn_model(input_shape=X_train.shape[1:], n_classes=n_classes)
 
     history = model.fit(
@@ -107,12 +132,12 @@ def run_pipeline(dataset_name: str, file_paths: list):
     )
 
     # ── Experiment 1: Pre-attack evaluation ─────────────────────
-    print("\n── Experiment 1: Pre-attack Evaluation ──")
-    pre_attack_results = evaluate_model(model, X_test, y_test, label="Pre-Attack")
+    print("\n-- Experiment 1: Pre-attack Baseline Evaluation --")
+    pre_attack_results = evaluate_model(model, X_test_sub, y_test_sub, label="Pre-Attack Clean")
     print_results(pre_attack_results)
 
     # ── 3. ADVERSARIAL ATTACKS ──────────────────────────────────
-    print("\n[3/5] Generating adversarial attacks...")
+    print("\n[3/5] Generating adversarial attacks (FGSM, JSMA, C&W)...")
     all_attack_results = {}
 
     for part_idx, params in enumerate(CONFIG["attack_parts"]):
@@ -121,18 +146,18 @@ def run_pipeline(dataset_name: str, file_paths: list):
 
         # JSMA
         print("    Generating JSMA...")
-        X_jsma = generate_jsma(model, X_test, y_test, params)
-        jsma_res = evaluate_model(model, X_jsma, y_test, label=f"Post-JSMA {part_label}")
+        X_jsma = generate_jsma(model, X_test_sub, y_test_sub, params)
+        jsma_res = evaluate_model(model, X_jsma, y_test_sub, label=f"Post-JSMA {part_label}")
 
         # FGSM
         print("    Generating FGSM...")
-        X_fgsm = generate_fgsm(model, X_test, params["epsilon"])
-        fgsm_res = evaluate_model(model, X_fgsm, y_test, label=f"Post-FGSM {part_label}")
+        X_fgsm = generate_fgsm(model, X_test_sub, params["epsilon"])
+        fgsm_res = evaluate_model(model, X_fgsm, y_test_sub, label=f"Post-FGSM {part_label}")
 
         # C&W
         print("    Generating C&W...")
-        X_cw = generate_cw(model, X_test, y_test, params)
-        cw_res = evaluate_model(model, X_cw, y_test, label=f"Post-C&W {part_label}")
+        X_cw = generate_cw(model, X_test_sub, y_test_sub, params)
+        cw_res = evaluate_model(model, X_cw, y_test_sub, label=f"Post-C&W {part_label}")
 
         all_attack_results[part_label] = {
             "jsma": jsma_res, "fgsm": fgsm_res, "cw": cw_res,
@@ -142,8 +167,8 @@ def run_pipeline(dataset_name: str, file_paths: list):
         print_results(fgsm_res)
         print_results(cw_res)
 
-    # ── 4. DEFENSE ──────────────────────────────────────────────
-    print("\n[4/5] Applying defense strategies...")
+    # ── 4. DEFENSE STRATEGIES ───────────────────────────────────
+    print("\n[4/5] Applying Defense Strategies (PGD, Spatial Smoothing, PIOA Hybrid)...")
     defense_results = {}
 
     for part_idx, params in enumerate(CONFIG["attack_parts"]):
@@ -151,7 +176,7 @@ def run_pipeline(dataset_name: str, file_paths: list):
         X_jsma_test = all_attack_results[part_label]["X_jsma"]
 
         # ── Experiment 3: PGD single defense (training) ─────────
-        print(f"\n  [{part_label}] PGD adversarial training...")
+        print(f"\n  [{part_label}] PGD Adversarial Training...")
         pgd_model = build_cnn_model(input_shape=X_train.shape[1:], n_classes=n_classes)
 
         pgd_epsilon = pioa_optimize(
@@ -175,11 +200,11 @@ def run_pipeline(dataset_name: str, file_paths: list):
             verbose=1
         )
 
-        pgd_res = evaluate_model(pgd_model, X_jsma_test, y_test, label=f"PGD Defense {part_label}")
+        pgd_res = evaluate_model(pgd_model, X_jsma_test, y_test_sub, label=f"PGD Defense {part_label}")
         print_results(pgd_res)
 
         # ── Experiment 4: SS single defense (testing) ───────────
-        print(f"  [{part_label}] Spatial Smoothing defense...")
+        print(f"  [{part_label}] Spatial Smoothing Defense...")
         X_test_smoothed = spatial_smoothing(X_jsma_test, window_radius=params["sigma"])
         ss_model = build_cnn_model(input_shape=X_train.shape[1:], n_classes=n_classes)
         ss_model.fit(
@@ -189,11 +214,11 @@ def run_pipeline(dataset_name: str, file_paths: list):
             validation_split=CONFIG["val_split"],
             verbose=1
         )
-        ss_res = evaluate_model(ss_model, X_test_smoothed, y_test, label=f"SS Defense {part_label}")
+        ss_res = evaluate_model(ss_model, X_test_smoothed, y_test_sub, label=f"SS Defense {part_label}")
         print_results(ss_res)
 
-        # ── Experiment 5: Hybrid defense (PGD+PIOA train + SS test)
-        print(f"  [{part_label}] Hybrid defense (PGD+PIOA+SS)...")
+        # ── Experiment 5: Hybrid defense (PGD+PIOA train + SS test) ─
+        print(f"  [{part_label}] Hybrid Defense (PGD+PIOA+SS)...")
         hybrid_model = build_cnn_model(input_shape=X_train.shape[1:], n_classes=n_classes)
 
         hybrid_model.fit(
@@ -205,11 +230,8 @@ def run_pipeline(dataset_name: str, file_paths: list):
         )
 
         X_hybrid_test = spatial_smoothing(X_jsma_test, window_radius=params["sigma"])
-        # ── YOUR NEW CONSISTENCY DETECTION ─────────────
-        print(f"  [{part_label}] Applying AICC + TCC detection...")
-        #  LIMIT DATA FOR SPEED (IMPORTANT)
-        X_hybrid_test = X_hybrid_test[:1000]
-        y_test = y_test[:1000]
+
+        print(f"  [{part_label}] Applying AICC + TCC Consistency Detection...")
         adv_flags = detect_adversarial(
             hybrid_model,
             X_hybrid_test,
@@ -219,32 +241,29 @@ def run_pipeline(dataset_name: str, file_paths: list):
         )
         from evaluation import evaluate_detection
 
-        # For adversarial test data → all labels = 1
         y_adv_true = np.ones(len(adv_flags))
-
         det_res = evaluate_detection(adv_flags, y_adv_true)
 
-        print("\n    ── Detection Metrics ──")
-        print(f"    Detection Rate : {det_res['detection_rate']}%")
+        print("\n    -- Detection Metrics --")
+        print(f"    Detection Rate   : {det_res['detection_rate']}%")
         print(f"    False Alarm Rate : {det_res['false_alarm_rate']}%")
 
-        # Optional: filter detected adversarial samples
         clean_indices = np.where(adv_flags == 0)[0]
+        if len(clean_indices) > 0:
+            X_filtered = X_hybrid_test[clean_indices]
+            y_filtered = y_test_sub[clean_indices]
+        else:
+            X_filtered = X_hybrid_test
+            y_filtered = y_test_sub
 
-        X_filtered = X_hybrid_test[clean_indices]
-        y_filtered = y_test[clean_indices]
+        print(f"    Filtered samples: {len(X_filtered)} / {len(X_hybrid_test)}")
 
-        print(f"    Removed {len(X_hybrid_test) - len(X_filtered)} suspected adversarial samples")
-
-        # Evaluate on filtered data
         hybrid_res = evaluate_model(
             hybrid_model,
             X_filtered,
             y_filtered,
             label=f"Hybrid + AICC+TCC {part_label}"
         )
-
-
         print_results(hybrid_res)
 
         defense_results[part_label] = {
@@ -254,7 +273,7 @@ def run_pipeline(dataset_name: str, file_paths: list):
         }
 
     # ── 5. PLOT & SAVE ──────────────────────────────────────────
-    print(f"\n[5/5] Saving results to {out_dir}/")
+    print(f"\n[5/5] Saving evaluation results and plots to {out_dir}/")
     plot_results(
         pre_attack_results,
         all_attack_results,
@@ -262,7 +281,7 @@ def run_pipeline(dataset_name: str, file_paths: list):
         history,
         out_dir=str(out_dir)
     )
-    print(f"      Done. Results saved to: {out_dir}/")
+    print(f"      Done. Results successfully saved to: {out_dir}/")
     return defense_results
 
 
@@ -270,16 +289,16 @@ def main():
     Path(CONFIG["output_dir"]).mkdir(exist_ok=True)
 
     for name, file_paths in CONFIG["datasets"].items():
-        # Check which files actually exist
-        missing = [f for f in file_paths if not Path(f).exists()]
+        resolved_files = [resolve_path(f) for f in file_paths]
+        missing = [f for f in resolved_files if not Path(f).exists()]
         if missing:
             print(f"\n[SKIP] {name}: the following files were not found:")
             for m in missing:
                 print(f"       {m}")
             continue
-        run_pipeline(name, file_paths)
+        run_pipeline(name, resolved_files)
 
-    print("\n\nAll done!")
+    print("\n\nAll scenarios complete on CIC-DDoS2019 dataset!")
 
 
 if __name__ == "__main__":

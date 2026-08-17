@@ -3,7 +3,7 @@ import numpy as np
 # ─────────────────────────────────────────────
 # Vectorized AICC & TCC Detection
 # ─────────────────────────────────────────────
-def detect_adversarial(model, X, window_size=3, n_samples=5, noise_std=0.01, final_thresh=0.75):
+def detect_adversarial(model, X, window_size=3, n_samples=5, noise_std=0.01, aicc_thresh=0.7, final_thresh=0.75, **kwargs):
     """
     Fully vectorized Consistency Detector (AICC + TCC).
     Processes all samples in batched matrix operations for ultra-fast speed.
