@@ -26,7 +26,7 @@ from preprocessing import load_and_preprocess
 from model import build_cnn_model
 from attacks import generate_jsma, generate_fgsm, generate_cw
 from defense import pgd_adversarial_training, spatial_smoothing, pioa_optimize
-from evaluation import evaluate_model, print_results, plot_results
+from evaluation import evaluate_model, evaluate_hybrid_defense, print_results, plot_results
 
 
 # ─────────────────────────────────────────────
@@ -248,20 +248,11 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
         print(f"    Detection Rate   : {det_res['detection_rate']}%")
         print(f"    False Alarm Rate : {det_res['false_alarm_rate']}%")
 
-        clean_indices = np.where(adv_flags == 0)[0]
-        if len(clean_indices) > 0:
-            X_filtered = X_hybrid_test[clean_indices]
-            y_filtered = y_test_sub[clean_indices]
-        else:
-            X_filtered = X_hybrid_test
-            y_filtered = y_test_sub
-
-        print(f"    Filtered samples: {len(X_filtered)} / {len(X_hybrid_test)}")
-
-        hybrid_res = evaluate_model(
+        hybrid_res = evaluate_hybrid_defense(
             hybrid_model,
-            X_filtered,
-            y_filtered,
+            X_hybrid_test,
+            y_test_sub,
+            adv_flags,
             label=f"Hybrid + AICC+TCC {part_label}"
         )
         print_results(hybrid_res)

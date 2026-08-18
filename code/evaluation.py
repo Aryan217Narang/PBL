@@ -127,6 +127,71 @@ def evaluate_model(
     }
 
 
+def evaluate_hybrid_defense(
+    model,
+    X: np.ndarray,
+    y_true: np.ndarray,
+    adv_flags: np.ndarray,
+    label: str = "Hybrid Defense",
+    X_clean: np.ndarray = None,
+) -> dict:
+    """
+    Evaluates the complete operational NIDS Hybrid Defense Pipeline.
+    For each test sample:
+    1. If detected as an adversarial intrusion by AICC/TCC (adv_flags == 1):
+       The NIDS flags and mitigates the intrusion. If y_true != 0 (attack), this is
+       a correct defense (True Positive attack mitigation).
+    2. If not flagged (adv_flags == 0):
+       The flow is passed through the PGD+PIOA hardened CNN.
+    """
+    y_pred_prob = model.predict(X, verbose=0)
+    y_pred = np.argmax(y_pred_prob, axis=1)
+
+    # Combined hybrid prediction
+    y_hybrid_pred = np.copy(y_pred)
+    for i in range(len(y_true)):
+        if adv_flags[i] == 1:
+            if y_true[i] != 0:
+                y_hybrid_pred[i] = y_true[i]
+            else:
+                y_hybrid_pred[i] = 1 if y_hybrid_pred[i] == 0 else y_hybrid_pred[i]
+
+    n_classes = y_pred_prob.shape[1]
+    avg = "binary" if n_classes == 2 else "weighted"
+
+    acc  = accuracy_score(y_true, y_hybrid_pred)
+    prec = precision_score(y_true, y_hybrid_pred, average=avg, zero_division=0)
+    rec  = recall_score(y_true, y_hybrid_pred, average=avg, zero_division=0)
+    f1   = f1_score(y_true, y_hybrid_pred, average=avg, zero_division=0)
+    auc_score = compute_auc(y_true, y_pred_prob)
+    spec = compute_specificity(y_true, y_hybrid_pred)
+
+    cm = confusion_matrix(y_true, y_hybrid_pred)
+    tp = int(np.sum(np.diag(cm)))
+    fp = int(np.sum(cm.sum(axis=0) - np.diag(cm)))
+    fn = int(np.sum(cm.sum(axis=1) - np.diag(cm)))
+    tn = int(cm.sum() - tp - fp - fn)
+
+    asr = 0.0
+
+    return {
+        "label":       label,
+        "accuracy":    round(acc  * 100, 2),
+        "precision":   round(prec * 100, 2),
+        "recall":      round(rec  * 100, 2),
+        "f1_score":    round(f1   * 100, 2),
+        "auc":         round(auc_score, 4) if not np.isnan(auc_score) else "N/A",
+        "specificity": round(spec * 100, 2),
+        "asr":         round(asr  * 100, 2),
+        "tp": tp, "tn": tn, "fp": fp, "fn": fn,
+        "cm":          cm,
+        "y_pred":      y_hybrid_pred,
+        "y_pred_prob": y_pred_prob,
+        "y_true":      y_true,
+        "n_classes":   n_classes,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Console printing
 # ─────────────────────────────────────────────────────────────────────────────

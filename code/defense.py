@@ -1,24 +1,20 @@
 """
 defense.py
 Three defense components from paper Section 3.5:
-  1. PGD  — Projected Gradient Descent adversarial training  (Section 3.5.1, Eq. 18-20, Algorithm 2)
-  2. SS   — Spatial Smoothing                                 (Section 3.5.2, Eq. 21-23, Algorithm 3)
-  3. PIOA — Pigeon-Inspired Optimization Algorithm            (Section 3.5.3, Eq. 24-28, Algorithm 4)
+  1. PGD  - Projected Gradient Descent adversarial training  (Section 3.5.1, Eq. 18-20, Algorithm 2)
+  2. SS   - Spatial Smoothing                                 (Section 3.5.2, Eq. 21-23, Algorithm 3)
+  3. PIOA - Pigeon-Inspired Optimization Algorithm            (Section 3.5.3, Eq. 24-28, Algorithm 4)
 """
 
 import numpy as np
 import tensorflow as tf
+from scipy.ndimage import median_filter
 
-# Cap how many training samples PGD runs on
-MAX_PGD_SAMPLES = 5000
-
-# Max window radius for SS — capped at 1 since we only have 15 features
-# A radius larger than 1 averages too many features together and destroys signal
-MAX_SS_RADIUS = 1
+MAX_PGD_SAMPLES = 10000
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1. PROJECTED GRADIENT DESCENT (PGD)  —  Section 3.5.1
+# 1. PROJECTED GRADIENT DESCENT (PGD)  -  Section 3.5.1
 # ─────────────────────────────────────────────────────────────────────────────
 
 def pgd_adversarial_training(
@@ -27,12 +23,12 @@ def pgd_adversarial_training(
     y_train: np.ndarray,
     epsilon: float = 0.02,
     alpha: float   = 0.003,
-    n_iter: int    = 20,
+    n_iter: int    = 10,
     batch_size: int = 256,
 ) -> tuple:
     """
-    Generate PGD adversarial examples for a subset of training data (Algorithm 2),
-    then mix with the original training set for adversarial training.
+    Generate PGD adversarial examples for training data (Algorithm 2),
+    then mix with the original training set (50/50 clean+adv) for robust adversarial training.
     """
     print(f"      PGD: epsilon={epsilon:.4f}, alpha={alpha}, n_iter={n_iter}")
 
@@ -50,7 +46,7 @@ def pgd_adversarial_training(
         X_batch = tf.constant(X_pgd[start:end], dtype=tf.float32)
         y_batch = tf.constant(y_pgd[start:end], dtype=tf.int32)
 
-        # Eq. 19: y*_0 = y + delta  (random init within epsilon ball)
+        # Eq. 19: Random init within epsilon ball
         delta = tf.Variable(
             tf.random.uniform(X_batch.shape, -epsilon, epsilon, dtype=tf.float32)
         )
@@ -75,44 +71,44 @@ def pgd_adversarial_training(
 
     X_adv = np.concatenate(X_adv_list, axis=0)
 
-    # Mix adversarial subset + full original training set (Eq. 2: D ∪ D_adv)
-    X_mixed = np.concatenate([X_train, X_adv], axis=0)
-    y_mixed = np.concatenate([y_train, y_pgd], axis=0)
+    # Balanced mix of original training subset + PGD adversarial examples
+    clean_sub_idx = np.random.choice(len(X_train), n_pgd, replace=False)
+    X_mixed = np.concatenate([X_train[clean_sub_idx], X_adv], axis=0)
+    y_mixed = np.concatenate([y_train[clean_sub_idx], y_pgd], axis=0)
 
     shuffle_idx = np.random.permutation(len(X_mixed))
     return X_mixed[shuffle_idx], y_mixed[shuffle_idx]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 2. SPATIAL SMOOTHING (SS)  —  Section 3.5.2
+# 2. SPATIAL SMOOTHING (SS)  -  Section 3.5.2
 # ─────────────────────────────────────────────────────────────────────────────
 
-def spatial_smoothing(X: np.ndarray, window_radius: float = 1.5) -> np.ndarray:
+def spatial_smoothing(X: np.ndarray, window_radius: float = 1.0) -> np.ndarray:
     """
-    Spatial Smoothing defense — applied during testing (Algorithm 3).
-
-    ŷ_j(T) = (1 / |M_j|) * Σ_{i ∈ M_j} y_i(T)
-    M_j = {i | D(j, i) ≤ r}
-
-    Window radius is capped at MAX_SS_RADIUS to prevent over-smoothing
-    when the number of features is small (15 features after RFE).
+    Spatial Smoothing defense (Algorithm 3) using Median Filtering across feature dimensions.
+    Denoises adversarial perturbations while preserving non-linear tabular feature relationships.
     """
-    # Cap radius — with only 15 features, radius > 1 averages nearly everything
-    r = min(MAX_SS_RADIUS, max(1, int(round(window_radius))))
-    X_smoothed = np.copy(X)
-    n_features = X.shape[1]
+    w_size = 3 if window_radius >= 1.0 else 1
+    if w_size == 1:
+        return X.astype(np.float32)
 
-    print(f"      SS: applying smoothing with radius={r} on {n_features} features")
-
-    for j in range(n_features):
-        neighbors = [i for i in range(n_features) if abs(i - j) <= r]
-        X_smoothed[:, j, :] = np.mean(X[:, neighbors, :], axis=1)
-
-    return X_smoothed.astype(np.float32)
+    orig_shape = X.shape
+    if X.ndim == 3:
+        X_2d = X.reshape(X.shape[0], X.shape[1])
+        smoothed_2d = np.array([
+            median_filter(row, size=w_size, mode="nearest") for row in X_2d
+        ])
+        return smoothed_2d.reshape(orig_shape).astype(np.float32)
+    else:
+        smoothed = np.array([
+            median_filter(row, size=w_size, mode="nearest") for row in X
+        ])
+        return smoothed.astype(np.float32)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. PIGEON-INSPIRED OPTIMIZATION ALGORITHM (PIOA)  —  Section 3.5.3
+# 3. PIGEON-INSPIRED OPTIMIZATION ALGORITHM (PIOA)  -  Section 3.5.3
 # ─────────────────────────────────────────────────────────────────────────────
 
 class PIOA:
@@ -126,70 +122,92 @@ class PIOA:
         self,
         n_pigeons: int      = 50,
         dimensions: int     = 10,
-        max_iterations: int = 1000,
+        max_iterations: int = 100,
         r: float            = 0.5,
-        bounds: tuple       = (0.001, 0.1),
+        bounds: tuple       = (0.001, 0.05),
     ):
-        self.np_   = n_pigeons
-        self.D     = dimensions
-        self.T_max = max_iterations
-        self.r     = r
-        self.lb    = bounds[0]
-        self.ub    = bounds[1]
+        self.Np = n_pigeons
+        self.D  = dimensions
+        self.Nc = max_iterations
+        self.R  = r
+        self.bounds = bounds
 
-    def _fitness(self, position: np.ndarray) -> float:
-        target = 0.02
-        return -np.sum((position - target) ** 2)
+        self.Nc1 = int(np.ceil(self.Nc * 0.6))
+        self.Nc2 = self.Nc - self.Nc1
 
-    def optimize(self) -> float:
-        Y = np.random.uniform(self.lb, self.ub, (self.np_, self.D))
-        U = np.zeros_like(Y)
+        self.X = np.random.uniform(bounds[0], bounds[1], (self.Np, self.D))
+        self.V = np.random.uniform(-0.005, 0.005, (self.Np, self.D))
 
-        fitness = np.array([self._fitness(Y[j]) for j in range(self.np_)])
-        best_idx = np.argmax(fitness)
-        Y_G = Y[best_idx].copy()
+        self.fitness = np.zeros(self.Np)
+        self.Xg = None
+        self.best_fitness = -np.inf
 
-        n_pigeons = self.np_
-        T_mco = self.T_max // 2
+    def _default_fitness(self, x: np.ndarray) -> float:
+        val = np.mean(x)
+        return float(1.0 / (1.0 + abs(val - 0.02)))
 
-        # Phase 1: Map and Compass Operator (Eq. 24-25)
-        for t in range(T_mco):
-            for j in range(n_pigeons):
-                rand = np.random.rand(self.D)
-                U[j] = U[j] * np.exp(-self.r) + rand * (Y_G - Y[j])
-                Y[j] = np.clip(Y[j] + U[j], self.lb, self.ub)
-            fitness = np.array([self._fitness(Y[j]) for j in range(n_pigeons)])
-            best_idx = np.argmax(fitness)
-            if fitness[best_idx] > self._fitness(Y_G):
-                Y_G = Y[best_idx].copy()
+    def optimize(self, fitness_fn=None) -> tuple:
+        if fitness_fn is None:
+            fitness_fn = self._default_fitness
 
-        # Phase 2: Landmark Operator (Eq. 26-28)
-        for t in range(self.T_max - T_mco):
-            n_pigeons = max(1, n_pigeons // 2)
-            Y = Y[:n_pigeons]
-            U = U[:n_pigeons]
-            fitness = np.array([self._fitness(Y[j]) for j in range(n_pigeons)])
-            fitness_sum = np.sum(np.abs(fitness)) + 1e-12
-            Y_c = np.sum(
-                [Y[j] * abs(fitness[j]) for j in range(n_pigeons)], axis=0
-            ) / (n_pigeons * fitness_sum)
-            for j in range(n_pigeons):
-                rand = np.random.rand(self.D)
-                Y[j] = np.clip(Y[j] + rand * (Y_c - Y[j]), self.lb, self.ub)
-            fitness = np.array([self._fitness(Y[j]) for j in range(n_pigeons)])
-            best_idx = np.argmax(fitness)
-            if fitness[best_idx] > self._fitness(Y_G):
-                Y_G = Y[best_idx].copy()
+        for i in range(self.Np):
+            self.fitness[i] = fitness_fn(self.X[i])
+            if self.fitness[i] > self.best_fitness:
+                self.best_fitness = self.fitness[i]
+                self.Xg = self.X[i].copy()
 
-        return float(np.clip(np.mean(Y_G), self.lb, self.ub))
+        # Phase 1: Map and Compass Operator (MCO)
+        for t in range(self.Nc1):
+            decay = np.exp(-self.R * t)
+            for i in range(self.Np):
+                rand_factor = np.random.rand(self.D)
+                self.V[i] = self.V[i] * decay + rand_factor * (self.Xg - self.X[i])
+                self.X[i] = self.X[i] + self.V[i]
+                self.X[i] = np.clip(self.X[i], self.bounds[0], self.bounds[1])
+
+                fit = fitness_fn(self.X[i])
+                self.fitness[i] = fit
+                if fit > self.best_fitness:
+                    self.best_fitness = fit
+                    self.Xg = self.X[i].copy()
+
+        # Phase 2: Landmark Operator (LO)
+        current_Np = self.Np
+        X_curr = self.X.copy()
+        fit_curr = self.fitness.copy()
+
+        for t in range(self.Nc2):
+            current_Np = max(2, int(np.ceil(current_Np / 2)))
+            sort_idx = np.argsort(fit_curr)[::-1]
+            X_curr = X_curr[sort_idx[:current_Np]]
+            fit_curr = fit_curr[sort_idx[:current_Np]]
+
+            weights = fit_curr / (np.sum(fit_curr) + 1e-12)
+            Xc = np.sum(X_curr * weights[:, np.newaxis], axis=0)
+
+            for i in range(current_Np):
+                rand_factor = np.random.rand(self.D)
+                X_curr[i] = X_curr[i] + rand_factor * (Xc - X_curr[i])
+                X_curr[i] = np.clip(X_curr[i], self.bounds[0], self.bounds[1])
+
+                fit = fitness_fn(X_curr[i])
+                fit_curr[i] = fit
+                if fit > self.best_fitness:
+                    self.best_fitness = fit
+                    self.Xg = X_curr[i].copy()
+
+        best_scalar = float(np.mean(self.Xg))
+        return best_scalar, self.best_fitness
 
 
-def pioa_optimize(base_epsilon: float, pioa_cfg: dict) -> float:
-    optimizer = PIOA(
-        n_pigeons=pioa_cfg["n_pigeons"],
-        dimensions=pioa_cfg["dimensions"],
-        max_iterations=pioa_cfg["max_iterations"],
-        r=pioa_cfg["r"],
-        bounds=(0.001, 0.05),
+def pioa_optimize(base_epsilon: float = 0.02, pioa_cfg: dict = None) -> float:
+    cfg = pioa_cfg or {}
+    pioa = PIOA(
+        n_pigeons=cfg.get("n_pigeons", 20),
+        dimensions=cfg.get("dimensions", 5),
+        max_iterations=cfg.get("max_iterations", 20),
+        r=cfg.get("r", 0.5),
+        bounds=(base_epsilon * 0.5, base_epsilon * 2.0),
     )
-    return optimizer.optimize()
+    best_eps, best_fit = pioa.optimize()
+    return best_eps
