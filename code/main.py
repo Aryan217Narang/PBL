@@ -1,16 +1,14 @@
 """
-Hybrid Defense Model for DL-based NIDS Against Adversarial Attacks
-Based on: Barik & Misra (2025), Multimedia Tools and Applications
-Pipeline: Preprocessing -> Attacks (JSMA/FGSM/C&W) -> Defense (PGD+PIOA+SS) -> Evaluation
-Dataset: CIC-DDoS2019 (100% 2019 dataset)
+main.py
+Execution pipeline for NIDS Adversarial Defense framework (CIC-DDoS2019):
+  1. Preprocessing (MinMaxScaler -> ICA -> RFE -> Binary Intrusion Split)
+  2. Baseline Model Training (1D-CNN)
+  3. Adversarial Attacks (FGSM, JSMA, C&W L2)
+  4. Defenses (PGD Adversarial Training + PIOA Optimization + Spatial Smoothing + AICC/TCC Consistency Detection)
+  5. Evaluation, Plots & CSV Metric Reports
 """
 
-import os
 import sys
-import warnings
-warnings.filterwarnings('ignore')
-
-# Enable UTF-8 encoding for Windows terminals
 if sys.platform == "win32":
     try:
         sys.stdout.reconfigure(encoding='utf-8')
@@ -30,7 +28,23 @@ from evaluation import evaluate_model, evaluate_hybrid_defense, print_results, p
 
 
 # ─────────────────────────────────────────────
-# CONFIG (Purely CIC-DDoS2019 Dataset)
+# Path Resolver
+# ─────────────────────────────────────────────
+def resolve_path(p: str) -> str:
+    path_obj = Path(p)
+    if path_obj.exists():
+        return str(path_obj)
+    cand1 = Path(__file__).resolve().parent / p
+    if cand1.exists():
+        return str(cand1)
+    cand2 = Path(__file__).resolve().parent.parent / p
+    if cand2.exists():
+        return str(cand2)
+    return str(path_obj)
+
+
+# ─────────────────────────────────────────────
+# Pipeline Configuration
 # ─────────────────────────────────────────────
 CONFIG = {
     "datasets": {
@@ -44,58 +58,36 @@ CONFIG = {
             "data/cic-ids-2019/DrDoS_SSDP_data_2_per.csv",
             "data/cic-ids-2019/DrDoS_UDP_data_2_per.csv",
             "data/cic-ids-2019/UDPLag_data_2_0_per.csv",
-            "data/cic-ids-2019/syn_data.csv",
-        ],
+            "data/cic-ids-2019/syn_data.csv"
+        ]
     },
-    # Train/test split (80/20 standard)
     "test_size": 0.20,
+    "batch_size": 128,
+    "epochs": 10,
     "val_split": 0.10,
 
-    # CNN hyperparameters (from paper Table 3)
-    "epochs":     10,
-    "batch_size": 64,
-    "optimizer":  "adam",
-    "loss":       "sparse_categorical_crossentropy",
-
-    # Attack parameter sets (from paper Table 4)
     "attack_parts": [
-        {"max_iter": 10, "epsilon": 0.1 , "sigma": 1.5, "alpha": 0.003},
+        {"max_iter": 10, "epsilon": 0.10, "sigma": 1.5, "alpha": 0.003},
         {"max_iter": 15, "epsilon": 0.15, "sigma": 2.0, "alpha": 0.005},
-        {"max_iter": 20, "epsilon": 0.2, "sigma": 2.5, "alpha": 0.007},
+        {"max_iter": 20, "epsilon": 0.20, "sigma": 2.5, "alpha": 0.007},
         {"max_iter": 25, "epsilon": 0.25, "sigma": 3.0, "alpha": 0.012},
     ],
 
-    # PIOA hyperparameters (from paper Table 5)
-    "pioa": {
-        "n_pigeons":      10,
-        "dimensions":     10,
-        "max_iterations": 20,
-        "r":              0.5,
-    },
-
-    # PGD defense settings
     "pgd": {
         "epsilon": 0.02,
         "alpha":   0.003,
         "n_iter":  10,
     },
 
-    # Output directory
+    "pioa": {
+        "n_pigeons":      20,
+        "dimensions":     5,
+        "max_iterations": 20,
+        "r":              0.5,
+    },
+
     "output_dir": "results",
 }
-
-
-def resolve_path(p: str) -> str:
-    """Helper to locate CSV files regardless of execution working directory."""
-    if os.path.exists(p):
-        return p
-    alt = os.path.join("code", p)
-    if os.path.exists(alt):
-        return alt
-    parent_alt = os.path.join("..", p)
-    if os.path.exists(parent_alt):
-        return parent_alt
-    return p
 
 
 def run_pipeline(dataset_name: str, raw_file_paths: list):
@@ -109,10 +101,13 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ── 1. PREPROCESSING ────────────────────────────────────────
-    print("\n[1/5] Preprocessing (MinMaxScaler -> FastICA -> RFE -> 80/20 Split)...")
-    X_train, X_test, y_train, y_test, n_classes = load_and_preprocess(
+    print("\n[1/5] Preprocessing (MinMaxScaler -> FastICA -> RFE (25 Features) -> Binary Intrusion Split)...")
+    X_train, X_test, y_train, y_test, n_classes, class_weights = load_and_preprocess(
         file_paths=file_paths,
-        test_size=CONFIG["test_size"]
+        test_size=CONFIG["test_size"],
+        n_ica_components=30,
+        n_rfe_features=25,
+        force_recompute=True
     )
     # Test subset for rapid adversarial generation
     X_test_sub = X_test[:1000]
@@ -120,7 +115,7 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
     print(f"      Train: {X_train.shape} | Test: {X_test_sub.shape} | Classes: {n_classes}")
 
     # ── 2. BUILD & TRAIN BASE MODEL ─────────────────────────────
-    print("\n[2/5] Training base 1D-CNN classifier...")
+    print("\n[2/5] Training base 1D-CNN classifier with class weighting...")
     model = build_cnn_model(input_shape=X_train.shape[1:], n_classes=n_classes)
 
     history = model.fit(
@@ -128,6 +123,7 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
         epochs=CONFIG["epochs"],
         batch_size=CONFIG["batch_size"],
         validation_split=CONFIG["val_split"],
+        class_weight=class_weights,
         verbose=1
     )
 
@@ -147,17 +143,17 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
         # JSMA
         print("    Generating JSMA...")
         X_jsma = generate_jsma(model, X_test_sub, y_test_sub, params)
-        jsma_res = evaluate_model(model, X_jsma, y_test_sub, label=f"Post-JSMA {part_label}")
+        jsma_res = evaluate_model(model, X_jsma, y_test_sub, label=f"Post-JSMA {part_label}", X_clean=X_test_sub)
 
         # FGSM
         print("    Generating FGSM...")
         X_fgsm = generate_fgsm(model, X_test_sub, params["epsilon"])
-        fgsm_res = evaluate_model(model, X_fgsm, y_test_sub, label=f"Post-FGSM {part_label}")
+        fgsm_res = evaluate_model(model, X_fgsm, y_test_sub, label=f"Post-FGSM {part_label}", X_clean=X_test_sub)
 
         # C&W
         print("    Generating C&W...")
         X_cw = generate_cw(model, X_test_sub, y_test_sub, params)
-        cw_res = evaluate_model(model, X_cw, y_test_sub, label=f"Post-C&W {part_label}")
+        cw_res = evaluate_model(model, X_cw, y_test_sub, label=f"Post-C&W {part_label}", X_clean=X_test_sub)
 
         all_attack_results[part_label] = {
             "jsma": jsma_res, "fgsm": fgsm_res, "cw": cw_res,
@@ -179,8 +175,9 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
         print(f"\n  [{part_label}] PGD Adversarial Training...")
         pgd_model = build_cnn_model(input_shape=X_train.shape[1:], n_classes=n_classes)
 
+        # Scale PIOA optimization to match the attack perturbation magnitude
         pgd_epsilon = pioa_optimize(
-            base_epsilon=CONFIG["pgd"]["epsilon"],
+            base_epsilon=params["epsilon"],
             pioa_cfg=CONFIG["pioa"]
         )
         print(f"    PIOA-optimized epsilon: {pgd_epsilon:.4f}")
@@ -188,7 +185,7 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
         X_train_adv, y_train_adv = pgd_adversarial_training(
             pgd_model, X_train, y_train,
             epsilon=pgd_epsilon,
-            alpha=CONFIG["pgd"]["alpha"],
+            alpha=params["alpha"],
             n_iter=CONFIG["pgd"]["n_iter"]
         )
 
@@ -197,10 +194,11 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
             epochs=CONFIG["epochs"],
             batch_size=CONFIG["batch_size"],
             validation_split=CONFIG["val_split"],
+            class_weight=class_weights,
             verbose=1
         )
 
-        pgd_res = evaluate_model(pgd_model, X_jsma_test, y_test_sub, label=f"PGD Defense {part_label}")
+        pgd_res = evaluate_model(pgd_model, X_jsma_test, y_test_sub, label=f"PGD Defense {part_label}", X_clean=X_test_sub)
         print_results(pgd_res)
 
         # ── Experiment 4: SS single defense (testing) ───────────
@@ -212,12 +210,13 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
             epochs=CONFIG["epochs"],
             batch_size=CONFIG["batch_size"],
             validation_split=CONFIG["val_split"],
+            class_weight=class_weights,
             verbose=1
         )
-        ss_res = evaluate_model(ss_model, X_test_smoothed, y_test_sub, label=f"SS Defense {part_label}")
+        ss_res = evaluate_model(ss_model, X_test_smoothed, y_test_sub, label=f"SS Defense {part_label}", X_clean=X_test_sub)
         print_results(ss_res)
 
-        # ── Experiment 5: Hybrid defense (PGD+PIOA train + SS test) ─
+        # ── Experiment 5: Hybrid defense (PGD+PIOA train + SS test + Consistency) ─
         print(f"  [{part_label}] Hybrid Defense (PGD+PIOA+SS)...")
         hybrid_model = build_cnn_model(input_shape=X_train.shape[1:], n_classes=n_classes)
 
@@ -226,6 +225,7 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
             epochs=CONFIG["epochs"],
             batch_size=CONFIG["batch_size"],
             validation_split=CONFIG["val_split"],
+            class_weight=class_weights,
             verbose=1
         )
 
@@ -236,8 +236,8 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
             hybrid_model,
             X_hybrid_test,
             window_size=3,
-            aicc_thresh=0.7,
-            final_thresh=0.75
+            aicc_thresh=0.70,
+            final_thresh=0.70
         )
         from evaluation import evaluate_detection
 
@@ -253,7 +253,8 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
             X_hybrid_test,
             y_test_sub,
             adv_flags,
-            label=f"Hybrid + AICC+TCC {part_label}"
+            label=f"Hybrid + AICC+TCC {part_label}",
+            X_clean=X_test_sub
         )
         print_results(hybrid_res)
 
@@ -289,7 +290,7 @@ def main():
             continue
         run_pipeline(name, resolved_files)
 
-    print("\n\nAll scenarios complete on CIC-DDoS2019 dataset!")
+    print("\n\nAll scenarios complete on CIC-DDoS2019 dataset!\n")
 
 
 if __name__ == "__main__":
