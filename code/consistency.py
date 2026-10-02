@@ -12,15 +12,17 @@ def detect_adversarial(
     X: np.ndarray,
     window_size: int = 3,
     n_samples: int = 5,
-    noise_std: float = 0.015,
+    noise_std: float = 0.02,
     aicc_thresh: float = 0.70,
-    final_thresh: float = 0.70,
+    final_thresh: float = 0.65,
+    adaptive: bool = True,
     **kwargs
 ) -> np.ndarray:
     """
-    Vectorized Consistency Detector (AICC + TCC).
+    Vectorized Consistency Detector (AICC + TCC + Adaptive Calibration).
     Evaluates prediction stability under low-amplitude Gaussian noise and temporal sliding windows.
     Adversarial perturbations exhibit high output volatility near decision boundaries.
+    Adaptive thresholding prevents false alarm spikes on high-noise or benign flows.
     """
     N = len(X)
     if N == 0:
@@ -40,7 +42,7 @@ def detect_adversarial(
         counts = np.bincount(pred_classes[i], minlength=preds.shape[1])
         aicc_scores[i] = counts.max() / n_samples
 
-    # ── 2. Vectorized Base Predictions for TCC ──────────────────
+    # ── 2. Vectorized Base Predictions for TCC & Margin ─────────
     base_preds = model.predict(X, batch_size=512, verbose=0)
     base_classes = np.argmax(base_preds, axis=1)
 
@@ -51,8 +53,21 @@ def detect_adversarial(
         counts = np.bincount(window, minlength=base_preds.shape[1])
         tcc_scores[i] = counts.max() / len(window)
 
-    # ── 3. Combined Score & Decision ────────────────────────────
+    # ── 3. Combined Score & Adaptive Decision ───────────────────
     c_final = 0.5 * aicc_scores + 0.5 * tcc_scores
-    adv_flags = (c_final < final_thresh).astype(int)
+
+    if adaptive:
+        # Dynamically calibrate threshold to batch stability distribution
+        mean_stab = float(np.mean(c_final))
+        eff_thresh = max(0.55, min(final_thresh, mean_stab - 0.05))
+    else:
+        eff_thresh = final_thresh
+
+    # Low confidence margin near decision boundary indicates adversarial craft
+    if base_preds.shape[1] >= 2:
+        margin = np.abs(base_preds[:, 1] - base_preds[:, 0])
+        adv_flags = ((c_final < eff_thresh) | ((margin < 0.15) & (c_final < 0.80))).astype(int)
+    else:
+        adv_flags = (c_final < eff_thresh).astype(int)
 
     return adv_flags

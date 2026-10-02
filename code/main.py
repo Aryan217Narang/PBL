@@ -68,9 +68,9 @@ CONFIG = {
 
     "attack_parts": [
         {"max_iter": 10, "epsilon": 0.10, "sigma": 1.5, "alpha": 0.003},
-        {"max_iter": 15, "epsilon": 0.15, "sigma": 2.0, "alpha": 0.005},
-        {"max_iter": 20, "epsilon": 0.20, "sigma": 2.5, "alpha": 0.007},
-        {"max_iter": 25, "epsilon": 0.25, "sigma": 3.0, "alpha": 0.012},
+        {"max_iter": 15, "epsilon": 0.15, "sigma": 1.5, "alpha": 0.005},
+        {"max_iter": 20, "epsilon": 0.20, "sigma": 1.5, "alpha": 0.007},
+        {"max_iter": 25, "epsilon": 0.25, "sigma": 1.5, "alpha": 0.012},
     ],
 
     "pgd": {
@@ -237,7 +237,8 @@ def run_pipeline(dataset_name: str, raw_file_paths: list):
             X_hybrid_test,
             window_size=3,
             aicc_thresh=0.70,
-            final_thresh=0.70
+            final_thresh=0.65,
+            adaptive=True
         )
         from evaluation import evaluate_detection
 

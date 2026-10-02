@@ -35,6 +35,8 @@ class NIDS_CNN(nn.Module):
         self.fc2 = nn.Linear(128, n_classes)  # softmax applied via CrossEntropyLoss / F.softmax at inference
 
     def forward(self, x):
+        if x.dtype != torch.float32:
+            x = x.to(torch.float32)
         # x: (batch, n_features) -> (batch, 1, n_features)
         if x.dim() == 2:
             x = x.unsqueeze(1)

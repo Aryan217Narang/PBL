@@ -25,12 +25,14 @@ def pgd_adversarial_training(
     alpha: float   = 0.003,
     n_iter: int    = 10,
     batch_size: int = 256,
+    multi_scale: bool = True,
 ) -> tuple:
     """
     Generate PGD adversarial examples for training data (Algorithm 2),
     then mix with the original training set (50/50 clean+adv) for robust adversarial training.
+    Supports multi-scale perturbation bounds to harden against varying attack strengths.
     """
-    print(f"      PGD: epsilon={epsilon:.4f}, alpha={alpha}, n_iter={n_iter}")
+    print(f"      PGD: epsilon={epsilon:.4f}, alpha={alpha}, n_iter={n_iter} (multi_scale={multi_scale})")
 
     n_pgd = min(MAX_PGD_SAMPLES, len(X_train))
     idx = np.random.choice(len(X_train), n_pgd, replace=False)
@@ -46,9 +48,12 @@ def pgd_adversarial_training(
         X_batch = tf.constant(X_pgd[start:end], dtype=tf.float32)
         y_batch = tf.constant(y_pgd[start:end], dtype=tf.int32)
 
+        # Multi-scale perturbation: train across a spectrum of epsilons up to target epsilon
+        batch_eps = float(np.random.uniform(max(0.04, epsilon * 0.5), epsilon)) if multi_scale else epsilon
+
         # Eq. 19: Random init within epsilon ball
         delta = tf.Variable(
-            tf.random.uniform(X_batch.shape, -epsilon, epsilon, dtype=tf.float32)
+            tf.random.uniform(X_batch.shape, -batch_eps, batch_eps, dtype=tf.float32)
         )
 
         for _ in range(n_iter):
@@ -60,7 +65,7 @@ def pgd_adversarial_training(
 
             grads = tape.gradient(loss, delta)
             delta.assign(delta + alpha * tf.sign(grads))
-            delta.assign(tf.clip_by_value(delta, -epsilon, epsilon))
+            delta.assign(tf.clip_by_value(delta, -batch_eps, batch_eps))
 
         X_adv_list.append(
             tf.clip_by_value(X_batch + delta, 0.0, 1.0).numpy().astype(np.float32)
@@ -125,12 +130,14 @@ class PIOA:
         max_iterations: int = 100,
         r: float            = 0.5,
         bounds: tuple       = (0.001, 0.05),
+        target_eps: float   = 0.02,
     ):
         self.Np = n_pigeons
         self.D  = dimensions
         self.Nc = max_iterations
         self.R  = r
         self.bounds = bounds
+        self.target_eps = target_eps
 
         self.Nc1 = int(np.ceil(self.Nc * 0.6))
         self.Nc2 = self.Nc - self.Nc1
@@ -144,7 +151,7 @@ class PIOA:
 
     def _default_fitness(self, x: np.ndarray) -> float:
         val = np.mean(x)
-        return float(1.0 / (1.0 + abs(val - 0.02)))
+        return float(1.0 / (1.0 + abs(val - self.target_eps)))
 
     def optimize(self, fitness_fn=None) -> tuple:
         if fitness_fn is None:
@@ -207,7 +214,8 @@ def pioa_optimize(base_epsilon: float = 0.02, pioa_cfg: dict = None) -> float:
         dimensions=cfg.get("dimensions", 5),
         max_iterations=cfg.get("max_iterations", 20),
         r=cfg.get("r", 0.5),
-        bounds=(base_epsilon * 0.5, base_epsilon * 2.0),
+        bounds=(base_epsilon * 0.8, base_epsilon * 1.3),
+        target_eps=base_epsilon,
     )
     best_eps, best_fit = pioa.optimize()
     return best_eps

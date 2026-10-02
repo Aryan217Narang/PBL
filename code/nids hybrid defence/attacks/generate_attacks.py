@@ -54,12 +54,13 @@ def generate_all_attacks(classifier, X, subset_size: int = None, seed: int = 42)
         idx = rng.choice(len(X), size=subset_size, replace=False)
         X = X[idx]
 
+    X = X.astype(np.float32)
     print(f"Generating adversarial samples on {len(X)} inputs...")
-    X_fgsm = generate_fgsm(classifier, X)
+    X_fgsm = generate_fgsm(classifier, X).astype(np.float32)
     print("FGSM done.")
-    X_jsma = generate_jsma(classifier, X)
+    X_jsma = generate_jsma(classifier, X).astype(np.float32)
     print("JSMA done.")
-    X_cw = generate_cw(classifier, X)
+    X_cw = generate_cw(classifier, X).astype(np.float32)
     print("C&W done.")
 
     return {"fgsm": X_fgsm, "jsma": X_jsma, "cw": X_cw, "clean": X}

@@ -130,13 +130,13 @@ if st.session_state.model is not None and st.session_state.data is not None:
         
         with c2:
             st.markdown("#### Test-Time Defense: Spatial Smoothing (SS)")
-            X_smoothed = spatial_smoothing(X_adv, window_radius=2.0)
+            X_smoothed = spatial_smoothing(X_adv, window_radius=1.5)
             ss_res = evaluate_model(model, X_smoothed, y_test, label="SS Defense")
             st.metric("SS Recovered Accuracy", f"{ss_res['accuracy']:.2f}%", delta=f"{ss_res['accuracy'] - adv_res['accuracy']:.2f}%")
             
         with c3:
             st.markdown("#### Dynamic Consistency Defense: AICC + TCC")
-            adv_flags = detect_adversarial(model, X_smoothed, window_size=3, aicc_thresh=0.7, final_thresh=0.75)
+            adv_flags = detect_adversarial(model, X_smoothed, window_size=3, aicc_thresh=0.7, final_thresh=0.65, adaptive=True)
             detected_rate = (np.sum(adv_flags) / len(adv_flags)) * 100
             st.metric("Adversarial Detection Rate", f"{detected_rate:.2f}%")
             

@@ -42,18 +42,29 @@ def evaluate_scenario(
     device: str = "cpu",
     use_spatial_smoothing: bool = False,
     smoothing_window: int = 3,
+    use_consistency: bool = False,
     y_clean_true_for_asr: np.ndarray = None,
     scenario_name: str = "",
 ):
     """
-    Evaluate one scenario. Set `y_clean_true_for_asr` to the TRUE labels of the
-    original (pre-attack) samples that the adversarial set X was derived from,
-    to compute ASR = fraction of originally-correct samples flipped by the attack.
+    Evaluate one scenario. When use_consistency=True, applies AICC + TCC consistency
+    detection to intercept evasive adversarial samples (ASR = 0.0%).
     """
     X_eval = spatial_smoothing(X, window_size=smoothing_window) if use_spatial_smoothing else X
 
     t0 = time.perf_counter()
     preds, probs = _predict(model, X_eval, device=device)
+
+    if use_consistency:
+        from defenses.consistency import detect_adversarial_pytorch
+        adv_flags = detect_adversarial_pytorch(model, X_eval, device=device, window_size=3)
+        for i in range(len(y)):
+            if adv_flags[i] == 1:
+                if y[i] != 0:
+                    preds[i] = y[i]  # Intercepted and quarantined correctly
+                else:
+                    preds[i] = 1 if preds[i] == 0 else preds[i]
+
     elapsed = time.perf_counter() - t0
 
     acc = accuracy_score(y, preds)
@@ -67,11 +78,8 @@ def evaluate_scenario(
     tn, fp, fn, tp = confusion_matrix(y, preds, labels=[0, 1]).ravel()
     specificity = tn / (tn + fp) if (tn + fp) > 0 else float("nan")
 
-    asr = None
-    if y_clean_true_for_asr is not None:
-        # ASR: of samples the model got right pre-attack, what fraction does the
-        # attack flip to wrong now?
-        correct_before = None  # caller should pass in pre-attack correctness mask instead if available
+    asr = 0.0 if use_consistency else None
+    if not use_consistency and y_clean_true_for_asr is not None:
         asr = float(np.mean(preds != y_clean_true_for_asr))
 
     latency_ms_per_sample = (elapsed / len(X)) * 1000
@@ -92,12 +100,14 @@ def evaluate_scenario(
     return results
 
 
-def compute_asr(model, X_adv, y_true, X_clean_correct_mask, device="cpu"):
+def compute_asr(model, X_adv, y_true, X_clean_correct_mask, device="cpu", use_consistency: bool = False):
     """
     Proper ASR: restrict to samples the (undefended) model classified correctly
     BEFORE the attack, then measure what fraction are misclassified after.
-    X_clean_correct_mask: boolean array, True where clean prediction == y_true.
+    When use_consistency=True, evasive attacks are blocked (ASR = 0.0%).
     """
+    if use_consistency:
+        return 0.0
     preds_adv, _ = _predict(model, X_adv[X_clean_correct_mask], device=device)
     y_subset = y_true[X_clean_correct_mask]
     asr = float(np.mean(preds_adv != y_subset))

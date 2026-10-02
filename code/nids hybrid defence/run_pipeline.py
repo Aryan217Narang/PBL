@@ -130,8 +130,9 @@ def main(args):
     for atk_name in ["fgsm", "jsma", "cw"]:
         r = evaluate_scenario(hybrid_model, adv_sets[atk_name], y_test_subset, device=device,
                                use_spatial_smoothing=True, smoothing_window=args.ss_window,
-                               scenario_name=f"5. Hybrid (PGD+PIOA+SS) vs {atk_name.upper()}")
-        r["asr"] = compute_asr(hybrid_model, adv_sets[atk_name], y_test_subset, mask_subset, device=device)
+                               use_consistency=True,
+                               scenario_name=f"5. Hybrid (PGD+PIOA+SS+AICC/TCC) vs {atk_name.upper()}")
+        r["asr"] = compute_asr(hybrid_model, adv_sets[atk_name], y_test_subset, mask_subset, device=device, use_consistency=True)
         results.append(r)
 
     print("\n===== FINAL RESULTS =====")

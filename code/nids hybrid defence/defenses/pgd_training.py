@@ -69,7 +69,8 @@ def pgd_adversarial_train(
 
             n_adv = int(len(xb) * adv_ratio)
             if n_adv > 0:
-                x_adv_part = pgd_attack_batch(model, xb[:n_adv], yb[:n_adv], eps, alpha, n_iter, device)
+                batch_eps = float(np.random.uniform(max(0.04, eps * 0.5), eps))
+                x_adv_part = pgd_attack_batch(model, xb[:n_adv], yb[:n_adv], batch_eps, alpha, n_iter, device)
                 xb_mixed = torch.cat([x_adv_part, xb[n_adv:]], dim=0)
             else:
                 xb_mixed = xb
