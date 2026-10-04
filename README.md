@@ -96,6 +96,27 @@ Detailed metrics across perturbation parameters ($\epsilon = 0.10 \rightarrow 0.
 
 ---
 
+## 🎯 Why Attack Success Rate (ASR) is 0.00% under Proposed Hybrid Defense
+
+**Attack Success Rate (ASR)** measures the proportion of malicious flows that successfully evade detection by fooling the model into predicting `BENIGN`:
+
+$$\text{ASR} = \frac{\sum_{i=1}^{N_{\text{atk}}} \mathbb{I}(\hat{y}(x_i^{\text{adv}}) = 0 \land y_i = 1)}{N_{\text{atk}}}$$
+
+In an undefended model, adversarial perturbations flip intrusion predictions to benign (ASR reaches **19.40% – 27.60%**). Under the **Proposed Hybrid Defense**, ASR drops to **0.00% across all attack vectors (FGSM, JSMA, C&W)** through four synergistic defense layers:
+
+1. **Multi-Scale PGD Adversarial Hardening**:
+   Trains the 5-layer CNN on worst-case perturbed samples across multi-step gradient bounds ($\epsilon \in [0.05, 0.25]$), compressing empirical risk and fortifying the decision boundary.
+2. **Pigeon-Inspired Optimization Algorithm (PIOA)**:
+   Employs biomimetic map-and-compass and landmark navigation to systematically converge on optimal perturbation bounds ($\epsilon, \alpha, \text{steps}$) without getting trapped in local gradient equilibria.
+3. **Median Spatial Smoothing (SS)**:
+   Applies non-linear rank filtering over feature sequences, stripping away isolated high-saliency perturbations (characteristic of JSMA and Carlini & Wagner $L_2$) before inference.
+4. **Adaptive Input & Temporal Consistency Checking (AICC / TCC)**:
+   Monitors prediction stability between raw and smoothed inputs:
+   $$\Delta_{\text{AICC}} = \|\hat{y}(x) - \hat{y}(x_{\text{smooth}})\|_2$$
+   If an adversarial sample sits precariously near the boundary, median filtering alters its brittle adversarial perturbation, triggering $\Delta_{\text{AICC}} > \tau$. The consistency checker detects this boundary discrepancy and executes a **fail-safe intrusion trap**, flagging the flow as an attack and preventing false-negative evasion ($\text{ASR} = 0.00\%$).
+
+---
+
 ## 🛠️ Key Components
 
 1. **Preprocessing Pipeline**:
@@ -116,9 +137,9 @@ Detailed metrics across perturbation parameters ($\epsilon = 0.10 \rightarrow 0.
 
 ## 🚀 Setup & Execution
 
-### 1. Installation
+### 1. Installation & Branch Selection
 ```bash
-git clone https://github.com/Aryan217Narang/PBL.git
+git clone -b feat/home https://github.com/Aryan217Narang/PBL.git
 cd PBL/code/"nids hybrid defence"
 pip install -r requirements.txt
 ```
@@ -169,7 +190,8 @@ streamlit run app.py
         ├── defenses/
         │   ├── pgd_training.py
         │   ├── pioa.py
-        │   └── spatial_smoothing.py
+        │   ├── spatial_smoothing.py
+        │   └── consistency.py          # PyTorch AICC/TCC Consistency Checker
         └── eval/
             ├── evaluate.py
             └── results.json
@@ -179,3 +201,4 @@ streamlit run app.py
 
 ## 📚 References
 * **Barik, K., & Misra, S. (2025).** *A comprehensive defense approach of deep learning-based NIDS against adversarial attacks.* Multimedia Tools and Applications, 84:37745–37791. https://doi.org/10.1007/s11042-025-21008-5
+
