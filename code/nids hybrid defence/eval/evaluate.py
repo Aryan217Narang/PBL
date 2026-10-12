@@ -1,14 +1,14 @@
 """
-Evaluation matching the paper's five scenarios and metrics:
+Evaluation matching the paper's scenarios and metrics:
   Accuracy, Precision, Recall, Specificity, AUC, Attack Success Rate (ASR),
   plus latency/throughput.
 
-Scenario map:
-  1. Pre-attack baseline           -> evaluate(clean_model, X_test_clean)
-  2. Post-attack, no defense       -> evaluate(clean_model, X_test_adv)
-  3. PGD-only defense              -> evaluate(pgd_model, X_test_adv)
-  4. SS-only defense               -> evaluate(clean_model, X_test_adv, smoothing=True)
-  5. Hybrid (PGD+PIOA train + SS)  -> evaluate(pgd_pioa_model, X_test_adv, smoothing=True)
+Fixed in this version:
+  - Removed ground-truth label peek (preds[i] = y[i])
+  - Removed hardcoded ASR = 0.0
+  - Honest active NIDS defense policy: flagged samples are intercepted as Attack (1)
+  - Modular consistency modes: "none", "aicc", "tcc", "both"
+  - Proper ASR computation measuring true evasions against the defense
 """
 
 import time
@@ -20,6 +20,7 @@ from sklearn.metrics import (
 )
 
 from defenses.spatial_smoothing import spatial_smoothing
+from defenses.consistency import detect_adversarial_pytorch
 
 
 def _predict(model, X, device="cpu", batch_size=256):
@@ -43,27 +44,32 @@ def evaluate_scenario(
     use_spatial_smoothing: bool = False,
     smoothing_window: int = 3,
     use_consistency: bool = False,
+    consistency_mode: str = "both",
     y_clean_true_for_asr: np.ndarray = None,
     scenario_name: str = "",
 ):
     """
-    Evaluate one scenario. When use_consistency=True, applies AICC + TCC consistency
-    detection to intercept evasive adversarial samples (ASR = 0.0%).
+    Evaluate one scenario honestly.
+    
+    When use_consistency=True:
+      - Detects adversarial/anomalous samples via AICC, TCC, or combined.
+      - Intercepted samples are quarantined/alerted as Attack (preds = 1).
+      - NEVER accesses or cheats using ground-truth y.
+      - Any false alarms on benign flows penalize false positive rate / specificity.
     """
     X_eval = spatial_smoothing(X, window_size=smoothing_window) if use_spatial_smoothing else X
 
     t0 = time.perf_counter()
     preds, probs = _predict(model, X_eval, device=device)
 
+    adv_flags = None
     if use_consistency:
-        from defenses.consistency import detect_adversarial_pytorch
-        adv_flags = detect_adversarial_pytorch(model, X_eval, device=device, window_size=3)
-        for i in range(len(y)):
-            if adv_flags[i] == 1:
-                if y[i] != 0:
-                    preds[i] = y[i]  # Intercepted and quarantined correctly
-                else:
-                    preds[i] = 1 if preds[i] == 0 else preds[i]
+        adv_flags = detect_adversarial_pytorch(
+            model, X_eval, device=device, window_size=3, mode=consistency_mode
+        )
+        # Active NIDS policy: anomalous/adversarial detections are flagged as Attack (1).
+        # Samples not flagged retain their model predictions. No label oracle used.
+        preds = np.where(adv_flags == 1, 1, preds)
 
     elapsed = time.perf_counter() - t0
 
@@ -73,14 +79,24 @@ def evaluate_scenario(
     try:
         auc = roc_auc_score(y, probs)
     except ValueError:
-        auc = float("nan")  # single-class edge case
+        auc = float("nan")
 
     tn, fp, fn, tp = confusion_matrix(y, preds, labels=[0, 1]).ravel()
     specificity = tn / (tn + fp) if (tn + fp) > 0 else float("nan")
 
-    asr = 0.0 if use_consistency else None
-    if not use_consistency and y_clean_true_for_asr is not None:
-        asr = float(np.mean(preds != y_clean_true_for_asr))
+    # Honest ASR: fraction of attack samples that successfully evaded detection
+    asr = None
+    if y_clean_true_for_asr is not None:
+        attack_mask = (y_clean_true_for_asr == 1)
+        if np.sum(attack_mask) > 0:
+            # An attack evades if the final system output is Benign (0)
+            asr = float(np.mean(preds[attack_mask] == 0))
+
+    # Consistency detection statistics (if applicable)
+    det_rate = float(np.mean(adv_flags == 1)) if adv_flags is not None else None
+    far = None
+    if adv_flags is not None and np.sum(y == 0) > 0:
+        far = float(np.mean(adv_flags[y == 0] == 1))
 
     latency_ms_per_sample = (elapsed / len(X)) * 1000
     throughput = len(X) / elapsed
@@ -93,6 +109,9 @@ def evaluate_scenario(
         "specificity": specificity,
         "auc": auc,
         "asr": asr,
+        "detection_rate": det_rate,
+        "false_alarm_rate": far,
+        "tp": int(tp), "tn": int(tn), "fp": int(fp), "fn": int(fn),
         "latency_ms_per_sample": latency_ms_per_sample,
         "throughput_samples_per_sec": throughput,
         "n_samples": len(X),
@@ -100,29 +119,53 @@ def evaluate_scenario(
     return results
 
 
-def compute_asr(model, X_adv, y_true, X_clean_correct_mask, device="cpu", use_consistency: bool = False):
+def compute_asr(
+    model,
+    X_adv,
+    y_true,
+    X_clean_correct_mask,
+    device: str = "cpu",
+    use_spatial_smoothing: bool = False,
+    smoothing_window: int = 3,
+    use_consistency: bool = False,
+    consistency_mode: str = "both",
+):
     """
-    Proper ASR: restrict to samples the (undefended) model classified correctly
-    BEFORE the attack, then measure what fraction are misclassified after.
-    When use_consistency=True, evasive attacks are blocked (ASR = 0.0%).
+    Proper ASR computation without cheating:
+      - Evaluates on samples that the clean model originally got right.
+      - If spatial smoothing is enabled, applies smoothing.
+      - If consistency is enabled, flags are intercepted as Attack (1).
+      - Returns fraction of attack samples that successfully evade (final pred == 0).
     """
-    if use_consistency:
-        return 0.0
-    preds_adv, _ = _predict(model, X_adv[X_clean_correct_mask], device=device)
+    X_subset = X_adv[X_clean_correct_mask]
     y_subset = y_true[X_clean_correct_mask]
-    asr = float(np.mean(preds_adv != y_subset))
+
+    if len(X_subset) == 0:
+        return 0.0
+
+    X_eval = spatial_smoothing(X_subset, window_size=smoothing_window) if use_spatial_smoothing else X_subset
+    preds, _ = _predict(model, X_eval, device=device)
+
+    if use_consistency:
+        adv_flags = detect_adversarial_pytorch(
+            model, X_eval, device=device, window_size=3, mode=consistency_mode
+        )
+        preds = np.where(adv_flags == 1, 1, preds)
+
+    # Attacks succeed when an actual attack (y=1) is classified as Benign (0)
+    attack_mask = (y_subset == 1)
+    if np.sum(attack_mask) == 0:
+        return 0.0
+
+    asr = float(np.mean(preds[attack_mask] == 0))
     return asr
 
 
 def print_results_table(all_results: list):
-    header = f"{'Scenario':<45}{'Acc':>8}{'Prec':>8}{'Rec':>8}{'Spec':>8}{'AUC':>8}{'ASR':>8}"
+    header = f"{'Scenario':<48}{'Acc':>8}{'Prec':>8}{'Rec':>8}{'Spec':>8}{'AUC':>8}{'ASR':>8}"
     print(header)
     print("-" * len(header))
     for r in all_results:
-        asr_str = f"{r['asr']:.4f}" if r["asr"] is not None else "  n/a"
-        print(f"{r['scenario']:<45}{r['accuracy']:>8.4f}{r['precision']:>8.4f}"
+        asr_str = f"{r['asr']:.4f}" if r.get("asr") is not None else "     n/a"
+        print(f"{r['scenario']:<48}{r['accuracy']:>8.4f}{r['precision']:>8.4f}"
               f"{r['recall']:>8.4f}{r['specificity']:>8.4f}{r['auc']:>8.4f}{asr_str:>8}")
-
-
-if __name__ == "__main__":
-    print("See run_pipeline.py for the full five-scenario evaluation flow.")

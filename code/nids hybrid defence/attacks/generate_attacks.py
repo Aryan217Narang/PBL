@@ -21,7 +21,7 @@ def wrap_art_classifier(model: nn.Module, n_features: int, n_classes: int = 2, d
         loss=criterion,
         input_shape=(n_features,),
         nb_classes=n_classes,
-        clip_values=(0.0, 1.0),  # data was MinMax-scaled to [0,1]
+        clip_values=(0.0, 1.0),
         device_type="gpu" if device == "cuda" else "cpu",
     )
     return classifier
@@ -33,26 +33,48 @@ def generate_fgsm(classifier, X, eps: float = 0.1):
 
 
 def generate_jsma(classifier, X, theta: float = 0.2, gamma: float = 0.15):
-    """
-    JSMA (Jacobian Saliency Map Attack).
-    """
+    """JSMA (Jacobian Saliency Map Attack)."""
     attack = SaliencyMapMethod(classifier=classifier, theta=theta, gamma=gamma, batch_size=128)
     return attack.generate(x=X)
 
 
 def generate_cw(classifier, X, confidence: float = 0.0, max_iter: int = 10):
-    attack = CarliniL2Method(classifier=classifier, confidence=confidence, max_iter=max_iter, batch_size=128, binary_search_steps=1, initial_const=0.1)
+    attack = CarliniL2Method(
+        classifier=classifier,
+        confidence=confidence,
+        max_iter=max_iter,
+        batch_size=128,
+        binary_search_steps=1,
+        initial_const=0.1
+    )
     return attack.generate(x=X)
 
 
-def generate_all_attacks(classifier, X, subset_size: int = None, seed: int = 42):
+def generate_all_attacks(
+    classifier,
+    X,
+    y=None,
+    subset_size: int = None,
+    sequential: bool = True,
+    seed: int = 42,
+):
     """
     Generate adversarial test sets for all three attacks.
+    When sequential=True, preserves chronological temporal stream order (X[:subset_size]).
+    Always returns matching y_subset so labels are never scrambled.
     """
     if subset_size is not None and subset_size < len(X):
-        rng = np.random.RandomState(seed)
-        idx = rng.choice(len(X), size=subset_size, replace=False)
-        X = X[idx]
+        if sequential:
+            # Preserves chronological flow ordering
+            X = X[:subset_size]
+            if y is not None:
+                y = y[:subset_size]
+        else:
+            rng = np.random.RandomState(seed)
+            idx = rng.choice(len(X), size=subset_size, replace=False)
+            X = X[idx]
+            if y is not None:
+                y = y[idx]
 
     X = X.astype(np.float32)
     print(f"Generating adversarial samples on {len(X)} inputs...")
@@ -63,23 +85,7 @@ def generate_all_attacks(classifier, X, subset_size: int = None, seed: int = 42)
     X_cw = generate_cw(classifier, X).astype(np.float32)
     print("C&W done.")
 
-    return {"fgsm": X_fgsm, "jsma": X_jsma, "cw": X_cw, "clean": X}
-
-
-if __name__ == "__main__":
-    # Example wiring (assumes a trained model + preprocessed test data already exist)
-    from models.cnn import build_model
-    import numpy as np
-
-    n_features = 20
-    model = build_model(n_features=n_features)
-    model.load_state_dict(torch.load("models/checkpoints/cnn_clean.pt"))
-    model.eval()
-
-    data = np.load("data/processed/processed_data.npz")
-    X_test, y_test = data["X_test"], data["y_test"]
-
-    classifier = wrap_art_classifier(model, n_features=n_features)
-    adv_sets = generate_all_attacks(classifier, X_test, subset_size=2000)
-
-    np.savez("data/processed/adversarial_test_sets.npz", **adv_sets, y=y_test[:2000])
+    result = {"fgsm": X_fgsm, "jsma": X_jsma, "cw": X_cw, "clean": X}
+    if y is not None:
+        result["y"] = y
+    return result
