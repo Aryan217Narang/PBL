@@ -4,7 +4,10 @@ A comprehensive defense framework for Deep Learning-based Network Intrusion Dete
 
 ---
 
-## 📌 Architecture Overview
+## ⚡ Canonical Pipeline Architecture
+
+> **Notice:** The repository has been standardized on a **single, unified, GPU-accelerated PyTorch + ART pipeline** located in `code/nids hybrid defence/`.  
+> The legacy TensorFlow/Keras CPU prototype has been **deprecated** and moved to `code/legacy_tf_pipeline/`.
 
 ```
                                   [ Network Flow Traffic ]
@@ -38,121 +41,82 @@ A comprehensive defense framework for Deep Learning-based Network Intrusion Dete
 
 ---
 
-## 📊 Experimental Results across 5 Scenarios
+## 🔒 Data Leakage Auditing & Fixes Applied
 
-Evaluation conducted on the **CIC-DDoS2019** benchmark (150,000 network flows across 10 DDoS categories) with GPU acceleration (NVIDIA RTX 4060):
+In this release, all data and label leakage vectors have been identified and strictly eliminated:
 
-| # | Scenario | Accuracy (%) | Precision (%) | Recall (%) | Specificity (%) | AUC | ASR (%) |
-| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **1** | **Pre-Attack Baseline (Clean CNN)** | **99.97%** | **99.97%** | **99.99%** | **99.74%** | **1.0000** | *n/a* |
-| **2** | **Post-Attack (No Defense vs FGSM)** | 78.40% | 89.15% | 86.35% | 11.32% | 0.4727 | 21.60% |
-| **2** | **Post-Attack (No Defense vs JSMA)** | 72.40% | 89.51% | 78.30% | 22.64% | 0.4930 | 27.60% |
-| **2** | **Post-Attack (No Defense vs C&W)** | 80.60% | 90.14% | 87.92% | 18.87% | 0.5122 | 19.40% |
-| **3** | **Single Defense (PGD-Only vs FGSM)** | 78.60% | 89.17% | 86.58% | 11.32% | 0.5055 | 21.40% |
-| **3** | **Single Defense (PGD-Only vs JSMA)** | 73.60% | 88.70% | 80.76% | 13.21% | 0.4711 | 26.40% |
-| **3** | **Single Defense (PGD-Only vs C&W)** | 78.20% | 89.30% | 85.91% | 13.21% | 0.5155 | 21.80% |
-| **4** | **Single Defense (SS-Only vs FGSM)** | 83.40% | 89.57% | 92.17% | 09.43% | 0.5089 | *n/a* |
-| **4** | **Single Defense (SS-Only vs JSMA)** | 76.40% | 89.07% | 83.89% | 13.21% | 0.5052 | *n/a* |
-| **4** | **Single Defense (SS-Only vs C&W)** | 83.60% | 89.42% | 92.62% | 07.55% | 0.5249 | *n/a* |
-| **5** | **Proposed Hybrid (PGD+PIOA+SS+AICC/TCC) vs FGSM** | **76.00%** | **80.85%** | **92.68%** | **00.00%** | **0.5488** | **0.00%** |
-| **5** | **Proposed Hybrid (PGD+PIOA+SS+AICC/TCC) vs JSMA** | **66.00%** | **81.58%** | **75.61%** | **22.22%** | **0.4553** | **0.00%** |
-| **5** | **Proposed Hybrid (PGD+PIOA+SS+AICC/TCC) vs C&W** | **70.00%** | **80.95%** | **82.93%** | **11.11%** | **0.5068** | **0.00%** |
+1. **Elimination of Target / Label Leakage**:
+   - *Previous bug:* If the consistency detector flagged an anomaly (`adv_flags[i] == 1`), legacy evaluators inspected ground truth `y[i]` and assigned `preds[i] = y[i]`.
+   - *Fix:* Replaced with an **active NIDS quarantine policy**: flagged flows are autonomously quarantined as **Malicious / Attack (`preds[i] = 1`)**. Zero ground-truth test labels are accessed during inference. Any false alarm on legitimate benign traffic honestly penalizes Specificity and Precision.
 
----
+2. **Elimination of Transductive Batch Leakage**:
+   - *Previous bug:* Threshold adaptation computed `np.mean(c_final)` across the entire test set simultaneously, allowing future test samples to influence earlier decisions.
+   - *Fix:* Threshold calibration is now strictly **causal** (using an online running average of past observed flows $0 \dots i$) or fixed to a pre-calibrated validation threshold. Future samples never leak into current decisions.
 
-## 📈 Multi-Part Parameter Benchmark (CIC-DDoS2019)
+3. **Causal Chronological Evaluation for TCC**:
+   - *Previous bug:* Shuffling test data randomized packet order, breaking temporal correlation for Temporal Consistency Checking (TCC).
+   - *Fix:* Added continuous chronological stream evaluation (`--temporal`) using real microsecond timestamps from the raw capture files.
 
-Detailed metrics across perturbation parameters ($\epsilon = 0.10 \rightarrow 0.25$, $\sigma = 1.5 \rightarrow 3.0$):
-
-| Experiment / Scenario | Accuracy (%) | Precision (%) | Recall (%) | F1-Score (%) | AUC | Specificity (%) | ASR (%) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Pre-Attack Clean** | **98.40%** | **99.87%** | **98.03%** | **98.94%** | **0.9995** | **98.80%** | *n/a* |
-| Post-JSMA (Part 1: $\epsilon=0.10$) | 86.70% | 95.50% | 86.58% | 90.82% | 0.9451 | 86.83% | 12.60% |
-| Post-FGSM (Part 1: $\epsilon=0.10$) | 75.90% | 75.98% | 99.87% | 86.30% | 0.5034 | 49.93% | 24.39% |
-| Post-C&W (Part 1: $c=0.1$) | 76.00% | 76.00% | 100.00% | 86.36% | 0.5000 | 50.00% | 24.29% |
-| **PGD Defense (Part 1)** | **93.20%** | **97.01%** | **93.95%** | **95.45%** | **0.9781** | **92.39%** | **5.39%** |
-| **SS Defense (Part 1)** | **80.30%** | **80.97%** | **96.84%** | **88.20%** | **0.8423** | **62.38%** | **19.15%** |
-| **Hybrid + AICC/TCC (Part 1)** | **71.70%** | **91.33%** | **69.34%** | **78.83%** | **0.8096** | **74.25%** | **0.0%** |
-| Post-JSMA (Part 2: $\epsilon=0.15$) | 88.10% | 92.23% | 92.11% | 92.17% | 0.8850 | 83.76% | 11.18% |
-| Post-FGSM (Part 2: $\epsilon=0.15$) | 75.80% | 75.95% | 99.74% | 86.23% | 0.4891 | 49.87% | 24.49% |
-| Post-C&W (Part 2: $c=0.15$) | 76.00% | 76.00% | 100.00% | 86.36% | 0.5000 | 50.00% | 24.29% |
-| **PGD Defense (Part 2)** | **75.20%** | **98.48%** | **68.42%** | **80.75%** | **0.9478** | **82.54%** | **22.75%** |
-| **SS Defense (Part 2)** | **75.20%** | **82.41%** | **85.66%** | **84.00%** | **0.6984** | **63.87%** | **24.16%** |
-| **Hybrid + AICC/TCC (Part 2)** | **78.20%** | **93.15%** | **76.97%** | **84.29%** | **0.8251** | **79.53%** | **0.0%** |
-| Post-JSMA (Part 3: $\epsilon=0.20$) | 84.90% | 87.27% | 93.82% | 90.42% | 0.8650 | 75.24% | 14.74% |
-| Post-FGSM (Part 3: $\epsilon=0.20$) | 75.90% | 75.98% | 99.87% | 86.30% | 0.4946 | 49.93% | 24.39% |
-| Post-C&W (Part 3: $c=0.20$) | 76.00% | 76.00% | 100.00% | 86.36% | 0.5000 | 50.00% | 24.29% |
-| **PGD Defense (Part 3)** | **56.20%** | **93.05%** | **45.79%** | **61.38%** | **0.8019** | **67.48%** | **43.33%** |
-| **SS Defense (Part 3)** | **77.10%** | **77.92%** | **97.50%** | **86.62%** | **0.6622** | **55.00%** | **22.49%** |
-| **Hybrid + AICC/TCC (Part 3 - Baseline)** | **61.30%** | **85.39%** | **59.21%** | **69.93%** | **0.7236** | **63.56%** | **0.0%** |
-| **Hybrid + AICC/TCC (Part 3 - Optimized)** | **76.80%** | **92.40%** | **74.15%** | **82.28%** | **0.8140** | **75.10%** | **0.0%** |
-| Post-JSMA (Part 4: $\epsilon=0.25$) | 86.50% | 87.97% | 95.26% | 91.47% | 0.8819 | 77.01% | 13.11% |
-| Post-FGSM (Part 4: $\epsilon=0.25$) | 75.90% | 75.98% | 99.87% | 86.30% | 0.5003 | 49.93% | 24.39% |
-| Post-C&W (Part 4: $c=0.25$) | 76.00% | 76.00% | 100.00% | 86.36% | 0.5000 | 50.00% | 24.29% |
-| **PGD Defense (Part 4)** | **45.70%** | **95.78%** | **29.87%** | **45.54%** | **0.8535** | **62.85%** | **53.66%** |
-| **SS Defense (Part 4)** | **77.70%** | **79.80%** | **94.61%** | **86.57%** | **0.7197** | **59.39%** | **22.08%** |
-| **Hybrid + AICC/TCC (Part 4 - Baseline)** | **39.10%** | **98.09%** | **20.26%** | **33.59%** | **0.7602** | **59.51%** | **0.0%** |
-| **Hybrid + AICC/TCC (Part 4 - Optimized)** | **74.30%** | **96.50%** | **71.80%** | **82.35%** | **0.8290** | **72.40%** | **0.0%** |
+4. **Honest Formulaic ASR (Attack Success Rate)**:
+   - *Previous bug:* Hardcoded `0.0%` ASR whenever consistency was enabled.
+   - *Fix:* Formulaic measurement of true evasion rate: fraction of attacks evading both the CNN and the consistency quarantine.
 
 ---
 
-## 🎯 Why Attack Success Rate (ASR) is 0.00% under Proposed Hybrid Defense
+## 📊 Benchmark Results across Scenarios
 
-**Attack Success Rate (ASR)** measures the proportion of malicious flows that successfully evade detection by fooling the model into predicting `BENIGN`:
+Evaluation conducted on the **CIC-DDoS2019** benchmark with GPU acceleration (NVIDIA CUDA):
 
-$$\text{ASR} = \frac{\sum_{i=1}^{N_{\text{atk}}} \mathbb{I}(\hat{y}(x_i^{\text{adv}}) = 0 \land y_i = 1)}{N_{\text{atk}}}$$
-
-In an undefended model, adversarial perturbations flip intrusion predictions to benign (ASR reaches **19.40% – 27.60%**). Under the **Proposed Hybrid Defense**, ASR drops to **0.00% across all attack vectors (FGSM, JSMA, C&W)** through four synergistic defense layers:
-
-1. **Multi-Scale PGD Adversarial Hardening**:
-   Trains the 5-layer CNN on worst-case perturbed samples across multi-step gradient bounds ($\epsilon \in [0.05, 0.25]$), compressing empirical risk and fortifying the decision boundary.
-2. **Pigeon-Inspired Optimization Algorithm (PIOA)**:
-   Employs biomimetic map-and-compass and landmark navigation to systematically converge on optimal perturbation bounds ($\epsilon, \alpha, \text{steps}$) without getting trapped in local gradient equilibria.
-3. **Median Spatial Smoothing (SS)**:
-   Applies non-linear rank filtering over feature sequences, stripping away isolated high-saliency perturbations (characteristic of JSMA and Carlini & Wagner $L_2$) before inference.
-4. **Adaptive Input & Temporal Consistency Checking (AICC / TCC)**:
-   Monitors prediction stability between raw and smoothed inputs:
-   $$\Delta_{\text{AICC}} = \|\hat{y}(x) - \hat{y}(x_{\text{smooth}})\|_2$$
-   If an adversarial sample sits precariously near the boundary, median filtering alters its brittle adversarial perturbation, triggering $\Delta_{\text{AICC}} > \tau$. The consistency checker detects this boundary discrepancy and executes a **fail-safe intrusion trap**, flagging the flow as an attack and preventing false-negative evasion ($\text{ASR} = 0.00\%$).
-
----
-
-## 🛠️ Key Components
-
-1. **Preprocessing Pipeline**:
-   - `MinMaxScaler` normalization to $[0, 1]$.
-   - `FastICA` feature unmixing & decorrelation.
-   - `Recursive Feature Elimination (RFE)` selecting the top discriminative features.
-2. **Classifier**:
-   - 5-layer 1D Convolutional Neural Network (`Conv1D`, `BatchNorm1D`, `MaxPool1D`, `Dropout`, `Dense`).
-3. **Adversarial Attacks**:
-   - **FGSM** (Fast Gradient Sign Method)
-   - **JSMA** (Jacobian Saliency Map Attack)
-   - **C&W** (Carlini & Wagner $L_2$)
-4. **Hybrid Defense Architecture**:
-   - **Training-Phase**: Projected Gradient Descent (PGD) hardening optimized by Pigeon-Inspired Optimization Algorithm (**PIOA**).
-   - **Testing-Phase**: Spatial Smoothing (**SS**) median filtering + Adaptive Input Consistency Check (**AICC**) & Temporal Consistency Check (**TCC**).
+| # | Scenario | Accuracy (%) | Precision (%) | Recall (%) | Specificity (%) | AUC | ASR (%) | False Alarm (FAR) |
+| :---: | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **1** | **Pre-Attack Baseline (Clean CNN)** | **99.13%** | **98.97%** | **99.12%** | **99.15%** | **0.9990** | **0.00%** | *n/a* |
+| **2** | **No Defense vs FGSM** ($\epsilon=0.10$) | 93.80% | 90.20% | 81.42% | 97.42% | 0.9911 | 18.92% | *n/a* |
+| **2** | **No Defense vs JSMA** ($\theta=0.2$) | 70.60% | 33.65% | 30.97% | 82.17% | 0.8440 | 70.27% | *n/a* |
+| **2** | **No Defense vs C&W** ($L_2$) | 72.40% | 33.33% | 22.12% | 87.08% | 0.8937 | 79.28% | *n/a* |
+| **3** | **PGD-only Defense vs FGSM** | 99.20% | 96.58% | 100.00% | 98.97% | 0.9997 | 0.00% | *n/a* |
+| **3** | **PGD-only Defense vs JSMA** | 95.20% | 85.04% | 95.58% | 95.09% | 0.9856 | 04.50% | *n/a* |
+| **3** | **PGD-only Defense vs C&W** | 97.40% | 93.86% | 94.69% | 98.19% | 0.9940 | 05.41% | *n/a* |
+| **4** | **SS-only Defense ($w=3$) vs FGSM** | 39.60% | 26.08% | 91.15% | 24.55% | 0.6593 | 09.01% | *n/a* |
+| **4** | **SS-only Defense ($w=3$) vs JSMA** | 28.20% | 20.29% | 74.34% | 14.73% | 0.5483 | 26.13% | *n/a* |
+| **4** | **SS-only Defense ($w=3$) vs C&W** | 42.40% | 26.29% | 85.84% | 29.72% | 0.6375 | 14.41% | *n/a* |
+| **5a** | **Proposed Hybrid (PGD+PIOA+SS) vs FGSM** | 75.40% | 47.28% | 76.99% | 74.94% | 0.8503 | 23.42% | *n/a* |
+| **5b** | **Hybrid + AICC vs FGSM** | 74.80% | 46.52% | 76.99% | 74.16% | 0.8503 | 22.52% | 1.80% |
+| **5c** | **Hybrid + TCC vs FGSM** | 75.20% | 47.03% | 76.99% | 74.68% | 0.8503 | 23.42% | 0.80% |
+| **5d** | **Hybrid + AICC & TCC vs FGSM** | 75.00% | 46.77% | 76.99% | 74.42% | 0.8503 | 23.42% | 1.20% |
+| **5a** | **Proposed Hybrid (PGD+PIOA+SS) vs JSMA** | 70.60% | 41.67% | 75.22% | 69.25% | 0.7996 | 25.23% | *n/a* |
+| **5d** | **Hybrid + AICC & TCC vs JSMA** | 70.00% | 41.15% | 76.11% | 68.22% | 0.7996 | 24.32% | 0.60% |
+| **5a** | **Proposed Hybrid (PGD+PIOA+SS) vs C&W** | 78.20% | 51.20% | 75.22% | 79.07% | 0.8437 | 25.23% | *n/a* |
+| **5d** | **Hybrid + AICC & TCC vs C&W** | 77.60% | 50.30% | 75.22% | 78.29% | 0.8437 | 25.23% | 0.40% |
 
 ---
 
-## 🚀 Setup & Execution
+## 🚀 How to Run the Canonical Pipeline
 
-### 1. Installation & Branch Selection
+### 1. Unified Entry Point (Root)
+To run the full end-to-end evaluation:
 ```bash
-git clone -b feat/home https://github.com/Aryan217Narang/PBL.git
-cd PBL/code/"nids hybrid defence"
-pip install -r requirements.txt
+python code/main.py
 ```
 
-### 2. Run the 5-Scenario Pipeline via CLI
+### 2. Chronological Temporal Stream Benchmark
+To evaluate on 1,500 continuous flows with real timestamps:
 ```bash
-python run_pipeline.py --epochs 8 --attack_subset 500 --pioa_pigeons 5 --pioa_iters 2
+python code/main.py --temporal --attack_subset 1500
 ```
 
-### 3. Run the Interactive Streamlit Web UI
+### 3. Direct PyTorch Pipeline Commands
+Alternatively, execute directly from within `code/nids hybrid defence/`:
 ```bash
-cd PBL/code
-streamlit run app.py
+cd "code/nids hybrid defence"
+
+# Standard evaluation
+python run_pipeline.py
+
+# Temporal stream evaluation with custom subset
+python run_pipeline.py --temporal --attack_subset 1500
+
+# Retrain all checkpoints from scratch
+python run_pipeline.py --retrain --epochs 6
 ```
 
 ---
@@ -160,45 +124,34 @@ streamlit run app.py
 ## 📁 Repository Structure
 
 ```
-├── README.md
-├── .gitignore
-└── code/
-    ├── app.py                          # Interactive Streamlit Web UI
-    ├── preprocessing.py                # Preprocessing module (MinMaxScaler, ICA, RFE)
-    ├── model.py                        # 1D-CNN classifier definition
-    ├── attacks.py                      # Vectorized adversarial attacks (FGSM, JSMA, C&W)
-    ├── defense.py                      # PGD, Spatial Smoothing, and PIOA
-    ├── consistency.py                  # AICC + TCC consistency detector
-    ├── evaluation.py                   # Multi-metric evaluation suite
-    ├── main.py                         # TensorFlow/Keras pipeline runner
-    ├── results/
-    │   └── CIC-DDoS2019/               # Confusion matrices, ROC curves & summary CSV
-    └── nids hybrid defence/            # PyTorch + ART GPU Modular Pipeline
-        ├── README.md
-        ├── requirements.txt
-        ├── run_pipeline.py             # 5-Scenario Orchestrator
-        ├── data/
-        │   └── preprocess.py
-        ├── models/
-        │   ├── cnn.py
-        │   └── checkpoints/
-        │       ├── cnn_clean.pt
-        │       ├── cnn_pgd.pt
-        │       └── cnn_hybrid.pt
-        ├── attacks/
-        │   └── generate_attacks.py
-        ├── defenses/
-        │   ├── pgd_training.py
-        │   ├── pioa.py
-        │   ├── spatial_smoothing.py
-        │   └── consistency.py          # PyTorch AICC/TCC Consistency Checker
-        └── eval/
-            ├── evaluate.py
-            └── results.json
+├── code/
+│   ├── main.py                          # Unified CLI entry point
+│   ├── legacy_tf_pipeline/              # DEPRECATED: TensorFlow prototype
+│   │   ├── README.md                    # Deprecation documentation
+│   │   ├── main_tf_legacy.py
+│   │   ├── preprocessing.py
+│   │   └── ...
+│   │
+│   └── nids hybrid defence/             # CANONICAL UNIFIED PIPELINE (PyTorch)
+│       ├── run_pipeline.py              # Main execution orchestrator
+│       ├── data/
+│       │   ├── preprocess.py            # Leak-free split & feature engineering
+│       │   └── processed/               # Cached processed npz and pipeline joblib
+│       ├── models/
+│       │   ├── cnn.py                   # 5-layer 1D CNN architecture
+│       │   └── checkpoints/             # Trained weights (cnn_clean, cnn_pgd, cnn_hybrid)
+│       ├── attacks/
+│       │   └── generate_attacks.py      # ART attack suite (FGSM, JSMA, C&W L2)
+│       ├── defenses/
+│       │   ├── pgd_training.py          # Multi-scale PGD adversarial hardening
+│       │   ├── pioa.py                  # Pigeon-Inspired Optimization algorithm
+│       │   ├── spatial_smoothing.py     # Inference-time median filter
+│       │   └── consistency.py           # Causal AICC & TCC anomaly detectors
+│       └── eval/
+│           ├── evaluate.py              # Honest active NIDS evaluation (no label snooping)
+│           ├── results.json             # Full metric JSON dump
+│           └── summary_results.csv      # Formatted summary matrix
+│
+├── CIC_DDoS2019_Hybrid_Defense_Changes_Report.pdf  # Peer review report document
+└── README.md                            # Project documentation
 ```
-
----
-
-## 📚 References
-* **Barik, K., & Misra, S. (2025).** *A comprehensive defense approach of deep learning-based NIDS against adversarial attacks.* Multimedia Tools and Applications, 84:37745–37791. https://doi.org/10.1007/s11042-025-21008-5
-

@@ -7,6 +7,13 @@ PyTorch implementation of:
 
 Evaluates prediction stability under low-amplitude Gaussian jitter (AICC)
 and temporal sliding window modal agreement (TCC).
+
+Data Leakage Fixes:
+  - Strict Causal Adaptation: Online adaptive thresholds use only past observed
+    traffic (0..i), eliminating transductive batch leakage where future test
+    samples influence earlier decisions.
+  - Zero Target Leakage: Classification decisions are strictly autonomous, with
+    no access to ground-truth labels.
 """
 
 import numpy as np
@@ -22,7 +29,7 @@ def detect_adversarial_pytorch(
     n_samples: int = 5,
     noise_std: float = 0.02,
     final_thresh: float = 0.65,
-    adaptive: bool = True,
+    adaptive: bool = False,
     mode: str = "both",
 ) -> np.ndarray:
     """
@@ -35,8 +42,9 @@ def detect_adversarial_pytorch(
       window_size: temporal sliding window size for TCC (e.g. 3 or 5)
       n_samples: number of Gaussian jitter samples for AICC
       noise_std: standard deviation of Gaussian jitter for AICC
-      final_thresh: baseline decision threshold for stability score
-      adaptive: dynamically adjust threshold based on batch stability mean
+      final_thresh: pre-calibrated baseline decision threshold (leak-free)
+      adaptive: if True, adjusts threshold strictly causally using past flows (0..i),
+                preventing future test batch leakage.
       mode: 'both', 'aicc', or 'tcc'
       
     Returns:
@@ -71,7 +79,7 @@ def detect_adversarial_pytorch(
             counts = np.bincount(pred_classes[i], minlength=probs.shape[1])
             aicc_scores[i] = counts.max() / n_samples
 
-    # 3. Compute TCC (Temporal Consistency Check) if requested
+    # 3. Compute TCC (Temporal Consistency Check) if requested (strictly causal window: i - window_size + 1 to i)
     tcc_scores = np.ones(N, dtype=np.float32)
     if mode in ("tcc", "both"):
         for i in range(N):
@@ -88,18 +96,22 @@ def detect_adversarial_pytorch(
     else:  # "both"
         c_final = 0.5 * aicc_scores + 0.5 * tcc_scores
 
-    # 5. Threshold calibration
+    # 5. Threshold calibration (LEAK-FREE)
     if adaptive:
-        mean_stab = float(np.mean(c_final))
-        eff_thresh = max(0.55, min(final_thresh, mean_stab - 0.05))
+        # Strictly causal online adaptation:
+        # Flow i only observes historical stability up to flow i.
+        # Future samples (i+1 .. N) NEVER leak into the decision threshold.
+        cumsum = np.cumsum(c_final)
+        counts = np.arange(1, N + 1, dtype=np.float32)
+        causal_mean = cumsum / counts
+        eff_thresh = np.clip(causal_mean - 0.05, 0.55, final_thresh)
     else:
+        # Constant pre-calibrated threshold: completely independent per sample
         eff_thresh = final_thresh
 
     # 6. Flag decision: low stability score OR boundary margin anomaly
     if base_probs.shape[1] >= 2:
         margin = np.abs(base_probs[:, 1] - base_probs[:, 0])
-        # A sample is flagged if its stability score drops below threshold,
-        # or if it has low confidence margin AND reduced stability.
         adv_flags = ((c_final < eff_thresh) | ((margin < 0.15) & (c_final < 0.80))).astype(int)
     else:
         adv_flags = (c_final < eff_thresh).astype(int)

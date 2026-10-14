@@ -13,7 +13,7 @@ from art.estimators.classification import PyTorchClassifier
 from art.attacks.evasion import FastGradientMethod, SaliencyMapMethod, CarliniL2Method
 
 
-def wrap_art_classifier(model: nn.Module, n_features: int, n_classes: int = 2, device: str = "cpu"):
+def wrap_art_classifier(model: nn.Module, n_features: int, n_classes: int = 2, device: str = "cpu", clip_values=None):
     """Wrap a trained PyTorch NIDS_CNN in ART's PyTorchClassifier interface."""
     criterion = nn.CrossEntropyLoss()
     classifier = PyTorchClassifier(
@@ -21,7 +21,7 @@ def wrap_art_classifier(model: nn.Module, n_features: int, n_classes: int = 2, d
         loss=criterion,
         input_shape=(n_features,),
         nb_classes=n_classes,
-        clip_values=(0.0, 1.0),
+        clip_values=clip_values,
         device_type="gpu" if device == "cuda" else "cpu",
     )
     return classifier
