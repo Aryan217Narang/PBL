@@ -44,7 +44,7 @@ def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"\n{'='*75}")
     print(f"  UNIFIED PYTORCH PIPELINE: CIC-DDoS2019 ADVERSARIAL DEFENSE")
-    print(f"  Device: {device} | Temporal Stream: {args.temporal}")
+    print(f"  Device: {device} | Temporal Stream: {args.temporal} | Smoothing Mode: {args.smoothing_mode}")
     print(f"{'='*75}\n")
 
     # ---------- 0. Data Loading ----------
@@ -149,19 +149,21 @@ def main(args):
         r["asr"] = compute_asr(pgd_model, adv_sets[atk_name], y_test_subset, mask_subset, device=device)
         results.append(r)
 
-    # ---------- 4. Scenario 4: Spatial Smoothing Only (Test-Time Filter) ----------
-    print("\n--- [Scenario 4] Spatial Smoothing Only ---")
+    # ---------- 4. Scenario 4: Spatial/Temporal Smoothing Only (Test-Time Filter) ----------
+    print(f"\n--- [Scenario 4] Smoothing Only (Mode={args.smoothing_mode}) ---")
     for atk_name in ["fgsm", "jsma", "cw"]:
         r = evaluate_scenario(clean_model, adv_sets[atk_name], y_test_subset, device=device,
                               use_spatial_smoothing=True, smoothing_window=args.ss_window,
+                              smoothing_mode=args.smoothing_mode,
                               y_clean_true_for_asr=y_test_subset,
                               scenario_name=f"4. SS-only defense vs {atk_name.upper()}")
         r["asr"] = compute_asr(clean_model, adv_sets[atk_name], y_test_subset, mask_subset,
-                               device=device, use_spatial_smoothing=True, smoothing_window=args.ss_window)
+                               device=device, use_spatial_smoothing=True, smoothing_window=args.ss_window,
+                               smoothing_mode=args.smoothing_mode)
         results.append(r)
 
     # ---------- 5. Scenario 5: Proposed Hybrid & Modular Consistency Ablations ----------
-    print("\n--- [Scenario 5] Hybrid Defense (PGD+PIOA Train + Spatial Smoothing) ---")
+    print(f"\n--- [Scenario 5] Hybrid Defense (PGD+PIOA Train + {args.smoothing_mode.capitalize()} Smoothing) ---")
     hybrid_ckpt = os.path.join(ckpt_dir, "cnn_hybrid.pt")
     hybrid_model = build_model(n_features=n_features, device=device)
 
@@ -197,6 +199,7 @@ def main(args):
         r_hyb = evaluate_scenario(
             hybrid_model, adv_sets[atk_name], y_test_subset, device=device,
             use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=False,
             y_clean_true_for_asr=y_test_subset,
             scenario_name=f"5a. Hybrid (Proposed) vs {atk_name.upper()}"
@@ -204,6 +207,7 @@ def main(args):
         r_hyb["asr"] = compute_asr(
             hybrid_model, adv_sets[atk_name], y_test_subset, mask_subset,
             device=device, use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=False
         )
         results.append(r_hyb)
@@ -212,6 +216,7 @@ def main(args):
         r_aicc = evaluate_scenario(
             hybrid_model, adv_sets[atk_name], y_test_subset, device=device,
             use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=True, consistency_mode="aicc",
             y_clean_true_for_asr=y_test_subset,
             scenario_name=f"5b. Hybrid + AICC vs {atk_name.upper()}"
@@ -219,6 +224,7 @@ def main(args):
         r_aicc["asr"] = compute_asr(
             hybrid_model, adv_sets[atk_name], y_test_subset, mask_subset,
             device=device, use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=True, consistency_mode="aicc"
         )
         results.append(r_aicc)
@@ -227,6 +233,7 @@ def main(args):
         r_tcc = evaluate_scenario(
             hybrid_model, adv_sets[atk_name], y_test_subset, device=device,
             use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=True, consistency_mode="tcc",
             y_clean_true_for_asr=y_test_subset,
             scenario_name=f"5c. Hybrid + TCC vs {atk_name.upper()}"
@@ -234,6 +241,7 @@ def main(args):
         r_tcc["asr"] = compute_asr(
             hybrid_model, adv_sets[atk_name], y_test_subset, mask_subset,
             device=device, use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=True, consistency_mode="tcc"
         )
         results.append(r_tcc)
@@ -242,6 +250,7 @@ def main(args):
         r_both = evaluate_scenario(
             hybrid_model, adv_sets[atk_name], y_test_subset, device=device,
             use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=True, consistency_mode="both",
             y_clean_true_for_asr=y_test_subset,
             scenario_name=f"5d. Hybrid + AICC & TCC vs {atk_name.upper()}"
@@ -249,6 +258,7 @@ def main(args):
         r_both["asr"] = compute_asr(
             hybrid_model, adv_sets[atk_name], y_test_subset, mask_subset,
             device=device, use_spatial_smoothing=True, smoothing_window=args.ss_window,
+            smoothing_mode=args.smoothing_mode,
             use_consistency=True, consistency_mode="both"
         )
         results.append(r_both)
@@ -295,6 +305,9 @@ if __name__ == "__main__":
     parser.add_argument("--attack_subset", type=int, default=1500,
                         help="Number of samples to evaluate for attack testing")
     parser.add_argument("--ss_window", type=int, default=3)
+    parser.add_argument("--smoothing_mode", type=str, default="temporal",
+                        choices=["temporal", "gated_temporal", "feature"],
+                        help="Smoothing defense mode: 'temporal' (axis 0), 'gated_temporal', or 'feature' (legacy)")
     parser.add_argument("--pioa_pigeons", type=int, default=10)
     parser.add_argument("--pioa_iters", type=int, default=5)
     parser.add_argument("--pioa_quick_epochs", type=int, default=2)

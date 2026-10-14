@@ -43,6 +43,7 @@ def evaluate_scenario(
     device: str = "cpu",
     use_spatial_smoothing: bool = False,
     smoothing_window: int = 3,
+    smoothing_mode: str = "temporal",
     use_consistency: bool = False,
     consistency_mode: str = "both",
     y_clean_true_for_asr: np.ndarray = None,
@@ -57,7 +58,17 @@ def evaluate_scenario(
       - NEVER accesses or cheats using ground-truth y.
       - Any false alarms on benign flows penalize false positive rate / specificity.
     """
-    X_eval = spatial_smoothing(X, window_size=smoothing_window) if use_spatial_smoothing else X
+    X_eval = (
+        spatial_smoothing(
+            X,
+            window_size=smoothing_window,
+            mode=smoothing_mode,
+            model=model,
+            device=device,
+        )
+        if use_spatial_smoothing
+        else X
+    )
 
     t0 = time.perf_counter()
     preds, probs = _predict(model, X_eval, device=device)
@@ -127,23 +138,31 @@ def compute_asr(
     device: str = "cpu",
     use_spatial_smoothing: bool = False,
     smoothing_window: int = 3,
+    smoothing_mode: str = "temporal",
     use_consistency: bool = False,
     consistency_mode: str = "both",
 ):
     """
     Proper ASR computation without cheating:
       - Evaluates on samples that the clean model originally got right.
-      - If spatial smoothing is enabled, applies smoothing.
+      - Denoises the continuous stream sequentially to preserve temporal continuity.
       - If consistency is enabled, flags are intercepted as Attack (1).
       - Returns fraction of attack samples that successfully evade (final pred == 0).
     """
-    X_subset = X_adv[X_clean_correct_mask]
-    y_subset = y_true[X_clean_correct_mask]
-
-    if len(X_subset) == 0:
+    if len(X_adv) == 0:
         return 0.0
 
-    X_eval = spatial_smoothing(X_subset, window_size=smoothing_window) if use_spatial_smoothing else X_subset
+    X_eval = (
+        spatial_smoothing(
+            X_adv,
+            window_size=smoothing_window,
+            mode=smoothing_mode,
+            model=model,
+            device=device,
+        )
+        if use_spatial_smoothing
+        else X_adv
+    )
     preds, _ = _predict(model, X_eval, device=device)
 
     if use_consistency:
@@ -153,11 +172,14 @@ def compute_asr(
         preds = np.where(adv_flags == 1, 1, preds)
 
     # Attacks succeed when an actual attack (y=1) is classified as Benign (0)
+    preds_subset = preds[X_clean_correct_mask]
+    y_subset = y_true[X_clean_correct_mask]
+
     attack_mask = (y_subset == 1)
     if np.sum(attack_mask) == 0:
         return 0.0
 
-    asr = float(np.mean(preds[attack_mask] == 0))
+    asr = float(np.mean(preds_subset[attack_mask] == 0))
     return asr
 
 
